@@ -1,0 +1,10 @@
+# Main dataset configuration
+dataset_name: large_scale_wood_surface_defects
+root_dir: data/raw/large_scale_wood_surface_defects
+annotation_path: ""
+image_dir: ""
+classes: []
+small_defect:
+  min_area_ratio: 0.01
+  min_width_px: 16
+  min_height_px: 16

@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.python-version
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+logs/
+outputs/logs/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# PyTest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# Data and model artifacts
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/splits/*
+!data/splits/.gitkeep
+
+outputs/checkpoints/*
+!outputs/checkpoints/.gitkeep
+outputs/figures/*
+!outputs/figures/.gitkeep
+outputs/tables/*
+!outputs/tables/.gitkeep
+outputs/logs/*
+!outputs/logs/.gitkeep
+
+# Large files
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.tar
+*.zip

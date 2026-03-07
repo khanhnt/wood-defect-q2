@@ -1,0 +1,13 @@
+# Secondary / transfer dataset configuration
+dataset_name: vnwoodknot
+root_dir: data/raw/vnwoodknot
+annotation_path: ""
+image_dir: ""
+classes:
+  - live_knot
+  - dead_knot
+  - knot_free
+label_mapping:
+  # Example:
+  # main_dataset_label: transfer_dataset_label
+  knot: live_knot

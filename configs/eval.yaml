@@ -1,0 +1,7 @@
+device: cuda
+output_dir: outputs
+evaluation:
+  save_predictions: true
+  save_visualizations: true
+  compute_per_class_ap: true
+  compute_cross_dataset: true

@@ -1,0 +1,17 @@
+numpy
+pandas
+matplotlib
+opencv-python
+pillow
+pyyaml
+tqdm
+scikit-learn
+scipy
+albumentations
+torch
+torchvision
+torchaudio
+pytest
+thop
+jupyter
+notebook
