@@ -1,0 +1,33 @@
+# Preprocessing config for the main large-scale dataset.
+dataset_name: large_scale_wood_surface_defects
+root_dir: ""
+processed_root_dir: ""
+repo_output_dir: outputs/tables
+use_semantic_maps: false
+jpeg_quality: 97
+classes:
+  - live_knot
+  - dead_knot
+  - resin
+  - knot_with_crack
+  - crack
+  - marrow
+  - quartzity
+  - knot_missing
+  - blue_stain
+  - overgrown
+split:
+  seed: 42
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+tile:
+  size: 1024
+  overlap: 128
+  min_box_visibility: 0.5
+negative_sampling:
+  enabled: true
+  ratio_to_positive: 0.25
+  max_per_source_image: 2
+  empty_source_keep: 0
+  seed: 42

@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Training entry point."""
+"""Training entry point for the simple baseline detector pipeline."""
+
+from __future__ import annotations
 
 import argparse
+from pathlib import Path
+import sys
 
-from src.models.hybrid_detector import HybridDetector
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.engine.trainer import Trainer
+from src.models.heads.detection_head import build_baseline_detector
 from src.utils.config import load_yaml
 from src.utils.logger import setup_logger
 from src.utils.seed import set_seed
@@ -24,15 +32,15 @@ def main() -> None:
     set_seed(config.get("seed", 42))
 
     model_cfg = config.get("model", {})
-    model = HybridDetector(
-        num_classes=model_cfg.get("num_classes", 10),
-        use_transformer=model_cfg.get("use_transformer", False),
-        num_transformer_blocks=model_cfg.get("num_transformer_blocks", 0),
-        use_p2_branch=model_cfg.get("use_p2_branch", False),
-    )
+    model_name = model_cfg.get("name", "baseline_detector")
+    if model_name != "baseline_detector":
+        raise NotImplementedError(
+            f"Only the baseline detector path is implemented now. Received model.name={model_name!r}."
+        )
 
+    model = build_baseline_detector(model_config=model_cfg, train_config=config.get("train", {}))
     trainer = Trainer(model=model, config=config)
-    logger.info("Starting training...")
+    logger.info("Starting training for %s", config.get("experiment_name", "baseline_detector"))
     trainer.fit()
 
 

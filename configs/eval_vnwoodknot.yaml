@@ -1,12 +1,12 @@
 seed: 42
 device: cuda
 output_dir: outputs
-experiment_name: baseline_detector_main_eval
+experiment_name: baseline_detector_vnwoodknot_eval
 checkpoint_path: outputs/checkpoints/baseline_detector/best.pt
 
 dataset:
-  eval: configs/dataset_main.yaml
-  split: val
+  eval: configs/dataset_transfer.yaml
+  split: test
 
 dataset_split:
   seed: 42
@@ -29,4 +29,4 @@ evaluation:
   save_predictions: false
   save_visualizations: false
   compute_per_class_ap: true
-  compute_cross_dataset: false
+  compute_cross_dataset: true
