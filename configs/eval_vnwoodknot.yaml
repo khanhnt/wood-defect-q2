@@ -30,3 +30,5 @@ evaluation:
   save_visualizations: false
   compute_per_class_ap: true
   compute_cross_dataset: true
+  in_domain_summary_path: outputs/tables/baseline_detector_main_eval_val_summary.json
+  in_domain_dataset_label: large_scale_main_val

@@ -8,9 +8,11 @@ classes:
   - dead_knot
   - knot_free
 label_mapping:
+  # Cross-dataset evaluation is overlap-only.
+  # VNWoodKnot classes are mapped into the main-dataset label space below.
   live_knot: live_knot
   dead_knot: dead_knot
-  knot_free: knot_free
+  knot_free: null
 small_defect:
   enabled: true
   combine: any
