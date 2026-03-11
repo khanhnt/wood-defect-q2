@@ -1,23 +1,75 @@
-"""Baseline detection model factory and placeholder head for later ablations."""
+"""Baseline detector factory and lightweight dense head for hybrid ablations."""
 
 from __future__ import annotations
 
 from typing import Any, Dict
 
+import torch
 from torch import nn
 
 
-class DetectionHead(nn.Module):
-    """Placeholder head retained for the unfinished hybrid model path."""
+class _HeadConvBlock(nn.Sequential):
+    """Small conv block for the lightweight dense prediction head."""
 
-    def __init__(self, num_classes: int = 10) -> None:
+    def __init__(self, channels: int) -> None:
+        super().__init__(
+            nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.GroupNorm(8, channels),
+            nn.SiLU(inplace=True),
+        )
+
+
+class DetectionHead(nn.Module):
+    """Compact per-level dense head for hybrid feature ablations."""
+
+    def __init__(self, num_classes: int = 10, in_channels: int = 128, num_head_convs: int = 2) -> None:
         super().__init__()
-        self.num_classes = num_classes
-        self.head = nn.Identity()
+        self.num_classes = int(num_classes)
+        self.in_channels = int(in_channels)
+        conv_blocks = [_HeadConvBlock(self.in_channels) for _ in range(max(int(num_head_convs), 1))]
+        self.shared_tower = nn.Sequential(*conv_blocks)
+        self.classification_head = nn.Conv2d(
+            self.in_channels,
+            self.num_classes,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+        self.box_regression_head = nn.Conv2d(
+            self.in_channels,
+            4,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+        self.objectness_head = nn.Conv2d(
+            self.in_channels,
+            1,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
 
     def forward(self, features):
-        """Forward pass."""
-        return self.head(features)
+        """Predict dense logits and box deltas for each pyramid level."""
+        cls_logits = {}
+        bbox_regression = {}
+        objectness = {}
+        refined_features = {}
+
+        for level_name, feature in features.items():
+            refined_feature = self.shared_tower(feature)
+            refined_features[level_name] = refined_feature
+            cls_logits[level_name] = self.classification_head(refined_feature)
+            bbox_regression[level_name] = torch.relu(self.box_regression_head(refined_feature))
+            objectness[level_name] = self.objectness_head(refined_feature)
+
+        return {
+            "features": refined_features,
+            "cls_logits": cls_logits,
+            "bbox_regression": bbox_regression,
+            "objectness": objectness,
+        }
 
 
 def build_baseline_detector(model_config: Dict[str, Any], train_config: Dict[str, Any] | None = None) -> nn.Module:
