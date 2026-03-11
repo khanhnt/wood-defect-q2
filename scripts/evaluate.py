@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluation entry point for the simple baseline detector pipeline."""
+"""Evaluation entry point for the simple detector pipeline."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.engine.evaluator import Evaluator
-from src.models.heads.detection_head import build_baseline_detector
+from src.models.builder import build_model
 from src.utils.config import load_yaml
 from src.utils.logger import setup_logger
 from src.utils.seed import set_seed
@@ -64,13 +64,7 @@ def main() -> None:
     if "num_classes" not in model_cfg:
         model_cfg["num_classes"] = len(checkpoint.get("class_names", []))
 
-    model_name = model_cfg.get("name", "baseline_detector")
-    if model_name != "baseline_detector":
-        raise NotImplementedError(
-            f"Only the baseline detector path is implemented now. Received model.name={model_name!r}."
-        )
-
-    model = build_baseline_detector(model_config=model_cfg, train_config=config.get("train", {}))
+    model = build_model(model_config=model_cfg, train_config=config.get("train", {}))
     evaluator = Evaluator(model=model, config=config)
     logger.info("Starting evaluation for %s using %s", experiment_name, checkpoint_path)
     metrics = evaluator.evaluate(

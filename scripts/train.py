@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Training entry point for the simple baseline detector pipeline."""
+"""Training entry point for the simple detector pipeline."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.engine.trainer import Trainer
-from src.models.heads.detection_head import build_baseline_detector
+from src.models.builder import build_model
 from src.utils.config import load_yaml
 from src.utils.logger import setup_logger
 from src.utils.seed import set_seed
@@ -32,15 +32,9 @@ def main() -> None:
     set_seed(config.get("seed", 42))
 
     model_cfg = config.get("model", {})
-    model_name = model_cfg.get("name", "baseline_detector")
-    if model_name != "baseline_detector":
-        raise NotImplementedError(
-            f"Only the baseline detector path is implemented now. Received model.name={model_name!r}."
-        )
-
-    model = build_baseline_detector(model_config=model_cfg, train_config=config.get("train", {}))
+    model = build_model(model_config=model_cfg, train_config=config.get("train", {}))
     trainer = Trainer(model=model, config=config)
-    logger.info("Starting training for %s", config.get("experiment_name", "baseline_detector"))
+    logger.info("Starting training for %s", config.get("experiment_name", model_cfg.get("name", "detector")))
     trainer.fit()
 
 

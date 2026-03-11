@@ -1,0 +1,36 @@
+seed: 42
+device: cuda
+output_dir: outputs
+experiment_name: hybrid_cnn
+
+dataset:
+  train: configs/dataset_main.yaml
+  val: configs/dataset_main.yaml
+  train_split: train
+  val_split: val
+
+dataset_split:
+  seed: 42
+  train_ratio: 0.8
+  val_ratio: 0.1
+
+train:
+  epochs: 20
+  batch_size: 4
+  num_workers: 0
+  image_size: 1024
+  learning_rate: 0.0002
+  weight_decay: 0.0001
+  best_metric: mAP50_95
+
+model:
+  name: hybrid_detector
+  num_classes: 10
+  use_transformer: false
+  num_transformer_blocks: 0
+  use_p2_branch: false
+  neck_out_channels: 128
+  image_size: 1024
+  score_threshold: 0.05
+  nms_threshold: 0.5
+  max_detections: 100
