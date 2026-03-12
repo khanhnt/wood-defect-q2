@@ -13,6 +13,7 @@ from src.datasets.label_mapping import (
     remap_predictions_and_targets_for_cross_dataset,
     resolve_cross_dataset_label_mapping,
 )
+from src.datasets.base_dataset import normalize_class_name
 from src.datasets.manifest_detection_dataset import build_detection_dataloader, load_manifest_records
 from src.metrics.detection_metrics import _to_numpy, box_iou_numpy, compute_detection_metrics
 from src.utils.io import ensure_dir, save_csv, save_json, save_jsonl
@@ -184,6 +185,7 @@ class Evaluator:
         self,
         dataset_config: Dict[str, Any],
         source_image_ids: Sequence[str],
+        target_class_names: Sequence[str],
     ) -> tuple[list[Dict[str, Any]], list[str], str]:
         source_manifest_path = self._infer_source_manifest_path(dataset_config)
         if source_manifest_path is None:
@@ -197,7 +199,12 @@ class Evaluator:
             split=None,
         )
         source_ids = set(source_image_ids)
+        target_class_to_id = {
+            normalize_class_name(class_name): class_id
+            for class_id, class_name in enumerate(target_class_names)
+        }
         filtered_targets: list[Dict[str, Any]] = []
+        skipped_annotations = 0
 
         for record in source_records:
             if record["image_id"] not in source_ids:
@@ -206,6 +213,10 @@ class Evaluator:
             boxes = []
             labels = []
             for annotation in record.get("annotations", []):
+                normalized_class_name = normalize_class_name(annotation["class_name"])
+                if normalized_class_name not in target_class_to_id:
+                    skipped_annotations += 1
+                    continue
                 x1, y1, x2, y2 = annotation["bbox_xyxy_norm"]
                 width = float(record["width"])
                 height = float(record["height"])
@@ -217,7 +228,7 @@ class Evaluator:
                         float(y2) * height,
                     ]
                 )
-                labels.append(int(annotation["class_id"]))
+                labels.append(int(target_class_to_id[normalized_class_name]))
 
             filtered_targets.append(
                 {
@@ -233,7 +244,13 @@ class Evaluator:
                 "Check source_manifest_path and source_image_id fields in the processed manifest."
             )
 
-        return filtered_targets, list(source_meta["class_names"]), str(source_manifest_path)
+        if skipped_annotations > 0:
+            logger.warning(
+                "Tile-merge evaluation skipped %d source annotations due to missing class-name mapping.",
+                skipped_annotations,
+            )
+
+        return filtered_targets, list(target_class_names), str(source_manifest_path)
 
     def _prediction_to_serializable(self, prediction: Dict[str, Any]) -> Dict[str, Any]:
         payload = {
@@ -438,6 +455,7 @@ class Evaluator:
             metric_targets, metric_class_names, source_manifest_path = self._load_source_level_targets(
                 dataset_config=dataset_config,
                 source_image_ids=source_image_ids,
+                target_class_names=target_class_names,
             )
 
         if bool(eval_cfg.get("compute_cross_dataset", False)):
