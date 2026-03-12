@@ -6,6 +6,10 @@ from src.utils.config import load_yaml
 
 
 HYBRID_CONFIGS = [
+    "configs/train_hybrid_cnn_micro.yaml",
+    "configs/train_hybrid_cnn_transformer_micro.yaml",
+    "configs/train_hybrid_cnn_p2_micro.yaml",
+    "configs/train_hybrid_cnn_transformer_p2_micro.yaml",
     "configs/train_hybrid_cnn_smoke.yaml",
     "configs/train_hybrid_cnn_transformer_smoke.yaml",
     "configs/train_hybrid_cnn_p2_smoke.yaml",
