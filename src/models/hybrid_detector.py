@@ -520,28 +520,26 @@ class HybridDetector(nn.Module):
 
                 cls_scores = torch.sigmoid(cls_logits).permute(1, 2, 0).reshape(-1, self.num_classes)
                 centerness = torch.sigmoid(centerness_logits).reshape(-1, 1)
-                combined_scores = torch.sqrt(cls_scores * centerness)
-                flattened_scores = combined_scores.reshape(-1)
-                candidate_mask = flattened_scores >= self.score_threshold
+                combined_scores = cls_scores * centerness
+                point_scores, class_indices = combined_scores.max(dim=1)
+                candidate_mask = point_scores >= self.score_threshold
                 if not candidate_mask.any():
                     continue
 
                 candidate_indices = candidate_mask.nonzero(as_tuple=False).squeeze(1)
-                candidate_scores = flattened_scores[candidate_indices]
+                candidate_scores = point_scores[candidate_indices]
                 topk = min(self.pre_nms_topk, candidate_scores.numel())
                 topk_scores, topk_order = candidate_scores.topk(topk)
                 topk_indices = candidate_indices[topk_order]
 
-                point_indices = topk_indices // self.num_classes
-                class_indices = topk_indices % self.num_classes
-                reg_values = bbox_regression.permute(1, 2, 0).reshape(-1, 4)[point_indices]
-                decoded_boxes = self._decode_ltrb_to_xyxy(centers[point_indices], reg_values)
+                reg_values = bbox_regression.permute(1, 2, 0).reshape(-1, 4)[topk_indices]
+                decoded_boxes = self._decode_ltrb_to_xyxy(centers[topk_indices], reg_values)
                 decoded_boxes[:, 0::2] = decoded_boxes[:, 0::2].clamp(min=0.0, max=float(image_width))
                 decoded_boxes[:, 1::2] = decoded_boxes[:, 1::2].clamp(min=0.0, max=float(image_height))
 
                 image_boxes.append(decoded_boxes)
                 image_scores.append(topk_scores)
-                image_labels.append(class_indices + 1)
+                image_labels.append(class_indices[topk_indices] + 1)
 
             if image_boxes:
                 boxes = torch.cat(image_boxes, dim=0)
