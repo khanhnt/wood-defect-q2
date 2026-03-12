@@ -99,6 +99,32 @@ def aligned_box_iou(
     return intersection / union.clamp(min=eps)
 
 
+def pairwise_box_iou(
+    boxes1: torch.Tensor,
+    boxes2: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Compute pairwise IoU for two XYXY box sets."""
+    if boxes1.ndim != 2 or boxes2.ndim != 2 or boxes1.shape[-1] != 4 or boxes2.shape[-1] != 4:
+        raise ValueError("pairwise_box_iou expects boxes1 and boxes2 shaped as [N, 4] and [M, 4].")
+    if boxes1.numel() == 0 or boxes2.numel() == 0:
+        return boxes1.new_zeros((boxes1.shape[0], boxes2.shape[0]))
+
+    inter_x1 = torch.maximum(boxes1[:, None, 0], boxes2[None, :, 0])
+    inter_y1 = torch.maximum(boxes1[:, None, 1], boxes2[None, :, 1])
+    inter_x2 = torch.minimum(boxes1[:, None, 2], boxes2[None, :, 2])
+    inter_y2 = torch.minimum(boxes1[:, None, 3], boxes2[None, :, 3])
+
+    inter_w = (inter_x2 - inter_x1).clamp(min=0.0)
+    inter_h = (inter_y2 - inter_y1).clamp(min=0.0)
+    intersection = inter_w * inter_h
+
+    area1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=0.0) * (boxes1[:, 3] - boxes1[:, 1]).clamp(min=0.0)
+    area2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=0.0) * (boxes2[:, 3] - boxes2[:, 1]).clamp(min=0.0)
+    union = area1[:, None] + area2[None, :] - intersection
+    return intersection / union.clamp(min=eps)
+
+
 def compute_detection_loss(loss_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """Reduce a torchvision-style loss dictionary into a stable scalar summary."""
     if not isinstance(loss_dict, dict):

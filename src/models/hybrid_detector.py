@@ -8,7 +8,12 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.losses.detection_loss import aligned_box_iou, generalized_box_iou_loss, sigmoid_focal_loss
+from src.losses.detection_loss import (
+    aligned_box_iou,
+    generalized_box_iou_loss,
+    pairwise_box_iou,
+    sigmoid_focal_loss,
+)
 from src.models.backbones.cnn_backbone import CNNBackbone
 from src.models.backbones.transformer_block import SimpleTransformerBlock
 from src.models.heads.detection_head import DetectionHead
@@ -43,6 +48,8 @@ class HybridDetector(nn.Module):
         max_detections: int = 100,
         pre_nms_topk: int = 1000,
         center_sampling_radius: float = 1.5,
+        atss_topk: int = 9,
+        assignment_reference_scale: float = 4.0,
         box_loss_weight: float = 2.0,
         cls_loss_weight: float = 1.0,
         quality_loss_weight: float | None = None,
@@ -75,6 +82,8 @@ class HybridDetector(nn.Module):
         self.max_detections = int(max_detections)
         self.pre_nms_topk = int(pre_nms_topk)
         self.center_sampling_radius = float(center_sampling_radius)
+        self.atss_topk = max(int(atss_topk), 1)
+        self.assignment_reference_scale = float(assignment_reference_scale)
         self.box_loss_weight = float(box_loss_weight)
         self.cls_loss_weight = float(cls_loss_weight)
         resolved_quality_loss_weight = quality_loss_weight
@@ -170,22 +179,6 @@ class HybridDetector(nn.Module):
             strides[level_name] = (stride_y, stride_x)
         return strides
 
-    def _build_regression_ranges(self, level_names: Sequence[str]) -> Dict[str, tuple[float, float]]:
-        if "p2" in level_names:
-            defaults = {
-                "p2": (0.0, 64.0),
-                "p3": (48.0, 128.0),
-                "p4": (96.0, 256.0),
-                "p5": (192.0, float("inf")),
-            }
-        else:
-            defaults = {
-                "p3": (0.0, 128.0),
-                "p4": (96.0, 256.0),
-                "p5": (192.0, float("inf")),
-            }
-        return {level_name: defaults[level_name] for level_name in level_names}
-
     def _compute_level_centers(
         self,
         height: int,
@@ -199,94 +192,27 @@ class HybridDetector(nn.Module):
         center_y, center_x = torch.meshgrid(grid_y, grid_x, indexing="ij")
         return torch.stack((center_x.reshape(-1), center_y.reshape(-1)), dim=-1)
 
-    def _encode_targets_for_level(
+    def _build_reference_boxes(
         self,
         centers: torch.Tensor,
-        level_name: str,
         strides: tuple[float, float],
-        boxes: torch.Tensor,
-        labels: torch.Tensor,
-        regression_ranges: Mapping[str, tuple[float, float]],
-    ) -> Dict[str, torch.Tensor]:
-        num_points = centers.shape[0]
-        device = centers.device
-        labels_out = torch.full((num_points,), -1, dtype=torch.long, device=device)
-        bbox_targets = torch.zeros((num_points, 4), dtype=torch.float32, device=device)
-        target_boxes = torch.zeros((num_points, 4), dtype=torch.float32, device=device)
-        point_weights = torch.zeros((num_points,), dtype=torch.float32, device=device)
-
-        if boxes.numel() == 0:
-            return {
-                "labels": labels_out,
-                "bbox_targets": bbox_targets,
-                "target_boxes": target_boxes,
-                "point_weights": point_weights,
-            }
-
-        center_x = centers[:, 0].unsqueeze(1)
-        center_y = centers[:, 1].unsqueeze(1)
-        x1 = boxes[:, 0].unsqueeze(0)
-        y1 = boxes[:, 1].unsqueeze(0)
-        x2 = boxes[:, 2].unsqueeze(0)
-        y2 = boxes[:, 3].unsqueeze(0)
-
-        l = center_x - x1
-        t = center_y - y1
-        r = x2 - center_x
-        b = y2 - center_y
-        ltrb = torch.stack((l, t, r, b), dim=-1)
-
-        inside_box = ltrb.min(dim=-1).values >= 0.0
-        max_regression = ltrb.max(dim=-1).values
-        lower_bound, upper_bound = regression_ranges[level_name]
-        in_range = max_regression >= lower_bound
-        if upper_bound != float("inf"):
-            in_range = in_range & (max_regression <= upper_bound)
-
-        gt_center_x = (x1 + x2) * 0.5
-        gt_center_y = (y1 + y2) * 0.5
-        sampling_radius = self.center_sampling_radius * max(strides)
-        sample_x1 = torch.maximum(gt_center_x - sampling_radius, x1)
-        sample_y1 = torch.maximum(gt_center_y - sampling_radius, y1)
-        sample_x2 = torch.minimum(gt_center_x + sampling_radius, x2)
-        sample_y2 = torch.minimum(gt_center_y + sampling_radius, y2)
-        inside_center = (
-            (center_x >= sample_x1)
-            & (center_x <= sample_x2)
-            & (center_y >= sample_y1)
-            & (center_y <= sample_y2)
+    ) -> torch.Tensor:
+        reference_extent = self.assignment_reference_scale * max(strides)
+        half_extent = reference_extent * 0.5
+        return torch.stack(
+            (
+                centers[:, 0] - half_extent,
+                centers[:, 1] - half_extent,
+                centers[:, 0] + half_extent,
+                centers[:, 1] + half_extent,
+            ),
+            dim=-1,
         )
 
-        valid_locations = inside_box & in_range & inside_center
-        missing_gt_mask = ~valid_locations.any(dim=0)
-        if missing_gt_mask.any():
-            fallback_locations = inside_box & in_range
-            for gt_index in missing_gt_mask.nonzero(as_tuple=False).squeeze(1):
-                if fallback_locations[:, gt_index].any():
-                    valid_locations[:, gt_index] = fallback_locations[:, gt_index]
-
-        gt_areas = ((x2 - x1) * (y2 - y1)).expand(num_points, -1).clone()
-        gt_areas[~valid_locations] = float("inf")
-        min_areas, matched_indices = gt_areas.min(dim=1)
-        positive_mask = torch.isfinite(min_areas)
-
-        if not positive_mask.any():
-            return {
-                "labels": labels_out,
-                "bbox_targets": bbox_targets,
-                "target_boxes": target_boxes,
-                "point_weights": point_weights,
-            }
-
-        positive_indices = positive_mask.nonzero(as_tuple=False).squeeze(1)
-        matched_targets = matched_indices[positive_indices]
-        matched_boxes = boxes[matched_targets]
-        matched_labels = labels[matched_targets]
-        matched_ltrb = ltrb[positive_indices, matched_targets]
-
-        left_right = matched_ltrb[:, [0, 2]]
-        top_bottom = matched_ltrb[:, [1, 3]]
-        point_weight = torch.sqrt(
+    def _compute_point_weights(self, ltrb_targets: torch.Tensor) -> torch.Tensor:
+        left_right = ltrb_targets[:, [0, 2]]
+        top_bottom = ltrb_targets[:, [1, 3]]
+        return torch.sqrt(
             (
                 left_right.min(dim=-1).values
                 / left_right.max(dim=-1).values.clamp(min=1e-6)
@@ -297,16 +223,169 @@ class HybridDetector(nn.Module):
             )
         )
 
-        labels_out[positive_indices] = matched_labels
-        bbox_targets[positive_indices] = matched_ltrb
-        target_boxes[positive_indices] = matched_boxes
-        point_weights[positive_indices] = point_weight
-        return {
-            "labels": labels_out,
-            "bbox_targets": bbox_targets,
-            "target_boxes": target_boxes,
-            "point_weights": point_weights,
-        }
+    def _split_flat_targets_by_level(
+        self,
+        level_names: Sequence[str],
+        num_points_per_level: Mapping[str, int],
+        labels: torch.Tensor,
+        bbox_targets: torch.Tensor,
+        target_boxes: torch.Tensor,
+        point_weights: torch.Tensor,
+        centers: torch.Tensor,
+    ) -> Dict[str, Dict[str, torch.Tensor]]:
+        split_targets: Dict[str, Dict[str, torch.Tensor]] = {}
+        start_index = 0
+        for level_name in level_names:
+            end_index = start_index + num_points_per_level[level_name]
+            split_targets[level_name] = {
+                "labels": labels[start_index:end_index],
+                "bbox_targets": bbox_targets[start_index:end_index],
+                "target_boxes": target_boxes[start_index:end_index],
+                "point_weights": point_weights[start_index:end_index],
+                "centers": centers[start_index:end_index],
+            }
+            start_index = end_index
+        return split_targets
+
+    def _encode_targets_for_image(
+        self,
+        level_names: Sequence[str],
+        level_metadata: Mapping[str, Dict[str, Any]],
+        boxes: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> Dict[str, Dict[str, torch.Tensor]]:
+        flat_centers = []
+        flat_reference_boxes = []
+        num_points_per_level: Dict[str, int] = {}
+        level_offsets: Dict[str, int] = {}
+        start_index = 0
+
+        for level_name in level_names:
+            centers = level_metadata[level_name]["centers"]
+            flat_centers.append(centers)
+            flat_reference_boxes.append(level_metadata[level_name]["reference_boxes"])
+            num_points_per_level[level_name] = int(centers.shape[0])
+            level_offsets[level_name] = start_index
+            start_index += int(centers.shape[0])
+
+        all_centers = torch.cat(flat_centers, dim=0)
+        all_reference_boxes = torch.cat(flat_reference_boxes, dim=0)
+        total_points = all_centers.shape[0]
+        device = all_centers.device
+
+        labels_out = torch.full((total_points,), -1, dtype=torch.long, device=device)
+        bbox_targets = torch.zeros((total_points, 4), dtype=torch.float32, device=device)
+        target_boxes = torch.zeros((total_points, 4), dtype=torch.float32, device=device)
+        point_weights = torch.zeros((total_points,), dtype=torch.float32, device=device)
+
+        if boxes.numel() == 0:
+            return self._split_flat_targets_by_level(
+                level_names=level_names,
+                num_points_per_level=num_points_per_level,
+                labels=labels_out,
+                bbox_targets=bbox_targets,
+                target_boxes=target_boxes,
+                point_weights=point_weights,
+                centers=all_centers,
+            )
+
+        gt_centers = torch.stack(
+            (
+                (boxes[:, 0] + boxes[:, 2]) * 0.5,
+                (boxes[:, 1] + boxes[:, 3]) * 0.5,
+            ),
+            dim=-1,
+        )
+        gt_areas = (boxes[:, 2] - boxes[:, 0]).clamp(min=0.0) * (boxes[:, 3] - boxes[:, 1]).clamp(min=0.0)
+        assigned_gt = torch.full((total_points,), -1, dtype=torch.long, device=device)
+        assigned_scores = torch.full((total_points,), -1.0, dtype=torch.float32, device=device)
+        assigned_areas = torch.full((total_points,), float("inf"), dtype=torch.float32, device=device)
+
+        for gt_index in range(boxes.shape[0]):
+            gt_box = boxes[gt_index : gt_index + 1]
+            gt_center = gt_centers[gt_index]
+            candidate_indices = []
+
+            for level_name in level_names:
+                centers = level_metadata[level_name]["centers"]
+                if centers.numel() == 0:
+                    continue
+                distances = torch.pow(centers[:, 0] - gt_center[0], 2) + torch.pow(centers[:, 1] - gt_center[1], 2)
+                topk = min(self.atss_topk, int(centers.shape[0]))
+                nearest = distances.topk(topk, largest=False).indices + level_offsets[level_name]
+                candidate_indices.append(nearest)
+
+            if not candidate_indices:
+                continue
+
+            candidate_indices = torch.cat(candidate_indices, dim=0)
+            candidate_reference_boxes = all_reference_boxes[candidate_indices]
+            candidate_ious = pairwise_box_iou(candidate_reference_boxes, gt_box).squeeze(1)
+            threshold = candidate_ious.mean() + candidate_ious.std(unbiased=False)
+
+            candidate_centers = all_centers[candidate_indices]
+            inside_box = (
+                (candidate_centers[:, 0] >= gt_box[0, 0])
+                & (candidate_centers[:, 0] <= gt_box[0, 2])
+                & (candidate_centers[:, 1] >= gt_box[0, 1])
+                & (candidate_centers[:, 1] <= gt_box[0, 3])
+            )
+            positive_mask = (candidate_ious >= threshold) & inside_box
+            positive_indices = candidate_indices[positive_mask]
+            positive_scores = candidate_ious[positive_mask]
+
+            if positive_indices.numel() == 0:
+                inside_indices = candidate_indices[inside_box]
+                inside_scores = candidate_ious[inside_box]
+                if inside_indices.numel() > 0:
+                    best_index = int(inside_scores.argmax().item())
+                    positive_indices = inside_indices[best_index : best_index + 1]
+                    positive_scores = inside_scores[best_index : best_index + 1]
+                else:
+                    best_index = int(candidate_ious.argmax().item())
+                    positive_indices = candidate_indices[best_index : best_index + 1]
+                    positive_scores = candidate_ious[best_index : best_index + 1]
+
+            gt_area = gt_areas[gt_index]
+            current_scores = assigned_scores[positive_indices]
+            current_areas = assigned_areas[positive_indices]
+            should_update = (positive_scores > current_scores) | (
+                (positive_scores == current_scores) & (gt_area < current_areas)
+            )
+            update_indices = positive_indices[should_update]
+            assigned_gt[update_indices] = gt_index
+            assigned_scores[update_indices] = positive_scores[should_update]
+            assigned_areas[update_indices] = gt_area
+
+        positive_indices = (assigned_gt >= 0).nonzero(as_tuple=False).squeeze(1)
+        if positive_indices.numel() > 0:
+            matched_targets = assigned_gt[positive_indices]
+            matched_boxes = boxes[matched_targets]
+            matched_labels = labels[matched_targets]
+            matched_centers = all_centers[positive_indices]
+            matched_ltrb = torch.stack(
+                (
+                    matched_centers[:, 0] - matched_boxes[:, 0],
+                    matched_centers[:, 1] - matched_boxes[:, 1],
+                    matched_boxes[:, 2] - matched_centers[:, 0],
+                    matched_boxes[:, 3] - matched_centers[:, 1],
+                ),
+                dim=-1,
+            )
+            labels_out[positive_indices] = matched_labels
+            bbox_targets[positive_indices] = matched_ltrb
+            target_boxes[positive_indices] = matched_boxes
+            point_weights[positive_indices] = self._compute_point_weights(matched_ltrb)
+
+        return self._split_flat_targets_by_level(
+            level_names=level_names,
+            num_points_per_level=num_points_per_level,
+            labels=labels_out,
+            bbox_targets=bbox_targets,
+            target_boxes=target_boxes,
+            point_weights=point_weights,
+            centers=all_centers,
+        )
 
     def _prepare_level_targets(
         self,
@@ -315,20 +394,25 @@ class HybridDetector(nn.Module):
         image_sizes: Sequence[tuple[int, int]],
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         level_names = list(dense_outputs["feature_levels"])
-        regression_ranges = self._build_regression_ranges(level_names)
-        target_bundle: Dict[str, Dict[str, torch.Tensor]] = {}
+        target_bundle = {
+            level_name: {
+                "labels": [],
+                "bbox_targets": [],
+                "target_boxes": [],
+                "point_weights": [],
+                "centers": [],
+            }
+            for level_name in level_names
+        }
 
-        for level_name in level_names:
-            cls_logits = dense_outputs["cls_logits"][level_name]
-            batch_size, _, height, width = cls_logits.shape
-            labels_per_image = []
-            bbox_per_image = []
-            target_boxes_per_image = []
-            point_weights_per_image = []
-            centers_per_image = []
+        batch_size = len(image_sizes)
+        for image_index in range(batch_size):
+            image_height, image_width = image_sizes[image_index]
+            level_metadata: Dict[str, Dict[str, Any]] = {}
 
-            for image_index in range(batch_size):
-                image_height, image_width = image_sizes[image_index]
+            for level_name in level_names:
+                cls_logits = dense_outputs["cls_logits"][level_name]
+                _, _, height, width = cls_logits.shape
                 stride_y = float(image_height) / float(height)
                 stride_x = float(image_width) / float(width)
                 centers = self._compute_level_centers(
@@ -338,27 +422,25 @@ class HybridDetector(nn.Module):
                     stride_x=stride_x,
                     device=cls_logits.device,
                 )
-                encoded_targets = self._encode_targets_for_level(
-                    centers=centers,
-                    level_name=level_name,
-                    strides=(stride_y, stride_x),
-                    boxes=targets[image_index]["boxes"],
-                    labels=targets[image_index]["labels"] - 1,
-                    regression_ranges=regression_ranges,
-                )
-                labels_per_image.append(encoded_targets["labels"])
-                bbox_per_image.append(encoded_targets["bbox_targets"])
-                target_boxes_per_image.append(encoded_targets["target_boxes"])
-                point_weights_per_image.append(encoded_targets["point_weights"])
-                centers_per_image.append(centers)
+                level_metadata[level_name] = {
+                    "centers": centers,
+                    "reference_boxes": self._build_reference_boxes(centers, (stride_y, stride_x)),
+                }
 
-            target_bundle[level_name] = {
-                "labels": torch.stack(labels_per_image, dim=0),
-                "bbox_targets": torch.stack(bbox_per_image, dim=0),
-                "target_boxes": torch.stack(target_boxes_per_image, dim=0),
-                "point_weights": torch.stack(point_weights_per_image, dim=0),
-                "centers": torch.stack(centers_per_image, dim=0),
-            }
+            image_targets = self._encode_targets_for_image(
+                level_names=level_names,
+                level_metadata=level_metadata,
+                boxes=targets[image_index]["boxes"],
+                labels=targets[image_index]["labels"] - 1,
+            )
+
+            for level_name in level_names:
+                for key in target_bundle[level_name]:
+                    target_bundle[level_name][key].append(image_targets[level_name][key])
+
+        for level_name in level_names:
+            for key in target_bundle[level_name]:
+                target_bundle[level_name][key] = torch.stack(target_bundle[level_name][key], dim=0)
         return target_bundle
 
     def _decode_ltrb_to_xyxy(self, centers: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
@@ -609,6 +691,8 @@ def build_hybrid_detector(model_config: Dict[str, Any], train_config: Dict[str, 
         max_detections=int(model_config.get("max_detections", 100)),
         pre_nms_topk=int(model_config.get("pre_nms_topk", 1000)),
         center_sampling_radius=float(model_config.get("center_sampling_radius", 1.5)),
+        atss_topk=int(model_config.get("atss_topk", 9)),
+        assignment_reference_scale=float(model_config.get("assignment_reference_scale", 4.0)),
         box_loss_weight=float(model_config.get("box_loss_weight", 2.0)),
         cls_loss_weight=float(model_config.get("cls_loss_weight", 1.0)),
         quality_loss_weight=(
