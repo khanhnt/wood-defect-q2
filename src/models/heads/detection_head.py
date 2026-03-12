@@ -126,7 +126,12 @@ class DetectionHead(nn.Module):
 def build_baseline_detector(model_config: Dict[str, Any], train_config: Dict[str, Any] | None = None) -> nn.Module:
     """Build a lightweight baseline detector using torchvision detection models."""
     try:
+        from torchvision.models.detection.anchor_utils import AnchorGenerator
         from torchvision.models.detection import fasterrcnn_resnet50_fpn
+        try:
+            from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_fpn
+        except ImportError:  # pragma: no cover - torchvision version dependent
+            fasterrcnn_mobilenet_v3_large_fpn = None
         try:
             from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_320_fpn
         except ImportError:  # pragma: no cover - torchvision version dependent
@@ -142,37 +147,76 @@ def build_baseline_detector(model_config: Dict[str, Any], train_config: Dict[str
     num_classes = int(model_config.get("num_classes", 1))
     image_size = int(model_config.get("image_size", train_config.get("image_size", 1024)))
     backbone_name = str(model_config.get("backbone", "mobilenet")).lower()
+    trainable_backbone_layers = model_config.get("trainable_backbone_layers")
+    if trainable_backbone_layers is not None:
+        trainable_backbone_layers = int(trainable_backbone_layers)
+    small_defect_profile = str(model_config.get("small_defect_profile", "none")).lower()
+
+    detector_kwargs: Dict[str, Any] = {
+        "min_size": image_size,
+        "max_size": image_size,
+    }
+    if trainable_backbone_layers is not None:
+        detector_kwargs["trainable_backbone_layers"] = trainable_backbone_layers
+
+    if small_defect_profile == "small":
+        anchor_sizes = ((8,), (16,), (32,), (64,), (128,))
+        aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
+        detector_kwargs.update(
+            {
+                "rpn_anchor_generator": AnchorGenerator(anchor_sizes, aspect_ratios),
+                "rpn_pre_nms_top_n_train": int(model_config.get("rpn_pre_nms_top_n_train", 3000)),
+                "rpn_pre_nms_top_n_test": int(model_config.get("rpn_pre_nms_top_n_test", 2000)),
+                "rpn_post_nms_top_n_train": int(model_config.get("rpn_post_nms_top_n_train", 1500)),
+                "rpn_post_nms_top_n_test": int(model_config.get("rpn_post_nms_top_n_test", 1000)),
+            }
+        )
+    elif small_defect_profile != "none":
+        raise ValueError(f"Unsupported small_defect_profile={small_defect_profile!r}.")
 
     detector = None
-    if backbone_name == "mobilenet" and fasterrcnn_mobilenet_v3_large_320_fpn is not None:
+    if backbone_name in {"mobilenet", "mobilenet_320"}:
+        if fasterrcnn_mobilenet_v3_large_320_fpn is None:
+            raise ImportError("This torchvision build does not provide fasterrcnn_mobilenet_v3_large_320_fpn.")
         try:
             detector = fasterrcnn_mobilenet_v3_large_320_fpn(
                 weights=None,
                 weights_backbone=None,
-                min_size=image_size,
-                max_size=image_size,
+                **detector_kwargs,
             )
         except TypeError:  # pragma: no cover - torchvision version dependent
             detector = fasterrcnn_mobilenet_v3_large_320_fpn(
                 pretrained=False,
                 pretrained_backbone=False,
-                min_size=image_size,
-                max_size=image_size,
+                **detector_kwargs,
+            )
+    elif backbone_name in {"mobilenet_hr", "mobilenet_fpn"}:
+        if fasterrcnn_mobilenet_v3_large_fpn is None:
+            raise ImportError("This torchvision build does not provide fasterrcnn_mobilenet_v3_large_fpn.")
+        try:
+            detector = fasterrcnn_mobilenet_v3_large_fpn(
+                weights=None,
+                weights_backbone=None,
+                **detector_kwargs,
+            )
+        except TypeError:  # pragma: no cover - torchvision version dependent
+            detector = fasterrcnn_mobilenet_v3_large_fpn(
+                pretrained=False,
+                pretrained_backbone=False,
+                **detector_kwargs,
             )
     else:
         try:
             detector = fasterrcnn_resnet50_fpn(
                 weights=None,
                 weights_backbone=None,
-                min_size=image_size,
-                max_size=image_size,
+                **detector_kwargs,
             )
         except TypeError:  # pragma: no cover - torchvision version dependent
             detector = fasterrcnn_resnet50_fpn(
                 pretrained=False,
                 pretrained_backbone=False,
-                min_size=image_size,
-                max_size=image_size,
+                **detector_kwargs,
             )
 
     in_features = detector.roi_heads.box_predictor.cls_score.in_features

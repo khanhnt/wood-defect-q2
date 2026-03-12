@@ -42,6 +42,20 @@ def parse_args():
     parser.add_argument("--score-threshold", type=float, default=None, help="Optional model score threshold override")
     parser.add_argument("--pre-nms-topk", type=int, default=None, help="Optional pre-NMS top-k override")
     parser.add_argument("--max-detections", type=int, default=None, help="Optional max detections per image override")
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        choices=["mobilenet", "mobilenet_320", "mobilenet_hr", "mobilenet_fpn", "resnet50"],
+        default=None,
+        help="Optional baseline backbone override",
+    )
+    parser.add_argument(
+        "--small-defect-profile",
+        type=str,
+        choices=["none", "small"],
+        default=None,
+        help="Optional baseline small-defect profile override",
+    )
     return parser.parse_args()
 
 
@@ -109,9 +123,21 @@ def _apply_train_overrides(config: Dict[str, Any], args: argparse.Namespace) -> 
         model_cfg["pre_nms_topk"] = int(args.pre_nms_topk)
     if args.max_detections is not None:
         model_cfg["max_detections"] = int(args.max_detections)
+    if args.backbone is not None:
+        model_cfg["backbone"] = args.backbone
+    if args.small_defect_profile is not None:
+        model_cfg["small_defect_profile"] = args.small_defect_profile
 
-    if args.variant is not None and args.experiment_name is None:
-        config["experiment_name"] = f"hybrid_{args.variant}"
+    if args.experiment_name is None:
+        if args.variant is not None:
+            config["experiment_name"] = f"hybrid_{args.variant}"
+        elif args.backbone is not None or args.small_defect_profile not in {None, "none"}:
+            parts = ["baseline"]
+            if args.backbone is not None:
+                parts.append(args.backbone)
+            if args.small_defect_profile not in {None, "none"}:
+                parts.append(args.small_defect_profile)
+            config["experiment_name"] = "_".join(parts)
 
     config["train"] = train_cfg
     config["model"] = model_cfg

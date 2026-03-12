@@ -33,6 +33,20 @@ def parse_args():
         choices=["cnn", "cnn_transformer", "cnn_p2", "cnn_transformer_p2"],
         help="Optional hybrid ablation override",
     )
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        choices=["mobilenet", "mobilenet_320", "mobilenet_hr", "mobilenet_fpn", "resnet50"],
+        default=None,
+        help="Optional baseline backbone override",
+    )
+    parser.add_argument(
+        "--small-defect-profile",
+        type=str,
+        choices=["none", "small"],
+        default=None,
+        help="Optional baseline small-defect profile override",
+    )
     parser.add_argument("--experiment-name", type=str, default=None, help="Optional experiment name override")
     parser.add_argument("--device", type=str, default=None, help="Optional device override")
     parser.add_argument("--batch-size", type=int, default=None, help="Optional eval batch size override")
@@ -107,10 +121,23 @@ def _apply_eval_overrides(config: Dict[str, Any], args: argparse.Namespace) -> D
     if args.score_threshold is not None:
         eval_cfg["score_threshold"] = float(args.score_threshold)
         model_cfg["score_threshold"] = float(args.score_threshold)
+    if args.backbone is not None:
+        model_cfg["backbone"] = args.backbone
+    if args.small_defect_profile is not None:
+        model_cfg["small_defect_profile"] = args.small_defect_profile
     if args.in_domain_summary_path is not None:
         eval_cfg["in_domain_summary_path"] = args.in_domain_summary_path
-    if args.variant is not None and args.experiment_name is None:
-        config["experiment_name"] = f"hybrid_{args.variant}_eval"
+    if args.experiment_name is None:
+        if args.variant is not None:
+            config["experiment_name"] = f"hybrid_{args.variant}_eval"
+        elif args.backbone is not None or args.small_defect_profile not in {None, "none"}:
+            parts = ["baseline"]
+            if args.backbone is not None:
+                parts.append(args.backbone)
+            if args.small_defect_profile not in {None, "none"}:
+                parts.append(args.small_defect_profile)
+            parts.append("eval")
+            config["experiment_name"] = "_".join(parts)
 
     config["model"] = model_cfg
     config["evaluation"] = eval_cfg
