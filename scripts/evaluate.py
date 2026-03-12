@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+from typing import Any, Dict
 
 import torch
 
@@ -26,6 +27,24 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Path to evaluation config")
     parser.add_argument("--checkpoint", type=str, default=None, help="Optional checkpoint override")
+    parser.add_argument(
+        "--variant",
+        type=str,
+        choices=["cnn", "cnn_transformer", "cnn_p2", "cnn_transformer_p2"],
+        help="Optional hybrid ablation override",
+    )
+    parser.add_argument("--experiment-name", type=str, default=None, help="Optional experiment name override")
+    parser.add_argument("--device", type=str, default=None, help="Optional device override")
+    parser.add_argument("--batch-size", type=int, default=None, help="Optional eval batch size override")
+    parser.add_argument("--num-workers", type=int, default=None, help="Optional eval num_workers override")
+    parser.add_argument("--max-samples", type=int, default=None, help="Optional eval subset size override")
+    parser.add_argument("--score-threshold", type=float, default=None, help="Optional eval score threshold override")
+    parser.add_argument(
+        "--in-domain-summary-path",
+        type=str,
+        default=None,
+        help="Optional in-domain summary override for cross-dataset comparison exports",
+    )
     return parser.parse_args()
 
 
@@ -39,9 +58,69 @@ def _deep_merge_dict(base: dict, override: dict) -> dict:
     return merged
 
 
+def _apply_variant_override(model_cfg: Dict[str, Any], variant: str | None) -> Dict[str, Any]:
+    if variant is None:
+        return model_cfg
+
+    overrides = {
+        "cnn": {
+            "use_transformer": False,
+            "num_transformer_blocks": 0,
+            "use_p2_branch": False,
+        },
+        "cnn_transformer": {
+            "use_transformer": True,
+            "num_transformer_blocks": 1,
+            "use_p2_branch": False,
+        },
+        "cnn_p2": {
+            "use_transformer": False,
+            "num_transformer_blocks": 0,
+            "use_p2_branch": True,
+        },
+        "cnn_transformer_p2": {
+            "use_transformer": True,
+            "num_transformer_blocks": 1,
+            "use_p2_branch": True,
+        },
+    }
+    merged = dict(model_cfg)
+    merged.update(overrides[variant])
+    return merged
+
+
+def _apply_eval_overrides(config: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    config = dict(config)
+    eval_cfg = dict(config.get("evaluation", {}))
+    model_cfg = _apply_variant_override(dict(config.get("model", {})), args.variant)
+
+    if args.experiment_name is not None:
+        config["experiment_name"] = args.experiment_name
+    if args.device is not None:
+        config["device"] = args.device
+    if args.batch_size is not None:
+        eval_cfg["batch_size"] = int(args.batch_size)
+    if args.num_workers is not None:
+        eval_cfg["num_workers"] = int(args.num_workers)
+    if args.max_samples is not None:
+        eval_cfg["max_samples"] = int(args.max_samples)
+    if args.score_threshold is not None:
+        eval_cfg["score_threshold"] = float(args.score_threshold)
+        model_cfg["score_threshold"] = float(args.score_threshold)
+    if args.in_domain_summary_path is not None:
+        eval_cfg["in_domain_summary_path"] = args.in_domain_summary_path
+    if args.variant is not None and args.experiment_name is None:
+        config["experiment_name"] = f"hybrid_{args.variant}_eval"
+
+    config["model"] = model_cfg
+    config["evaluation"] = eval_cfg
+    return config
+
+
 def main() -> None:
     args = parse_args()
     config = load_yaml(args.config)
+    config = _apply_eval_overrides(config=config, args=args)
     set_seed(config.get("seed", 42))
 
     experiment_name = config.get("experiment_name", "baseline_detector")
