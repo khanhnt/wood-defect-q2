@@ -21,6 +21,18 @@ from src.utils.seed import set_seed
 logger = setup_logger()
 
 
+BACKBONE_SCALE_OVERRIDES = {
+    "default": {
+        "stage_channels": [64, 128, 192, 256],
+        "neck_out_channels": 128,
+    },
+    "medium": {
+        "stage_channels": [80, 160, 224, 320],
+        "neck_out_channels": 160,
+    },
+}
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Path to training config")
@@ -29,6 +41,13 @@ def parse_args():
         type=str,
         choices=["cnn", "cnn_transformer", "cnn_p2", "cnn_transformer_p2"],
         help="Optional hybrid ablation override",
+    )
+    parser.add_argument(
+        "--backbone-scale",
+        type=str,
+        choices=["default", "medium"],
+        default=None,
+        help="Optional hybrid backbone scale override",
     )
     parser.add_argument("--experiment-name", type=str, default=None, help="Optional experiment name override")
     parser.add_argument("--output-dir", type=str, default=None, help="Optional output directory override")
@@ -76,12 +95,21 @@ def _apply_variant_override(model_cfg: Dict[str, Any], variant: str | None) -> D
     return merged
 
 
+def _apply_backbone_scale_override(model_cfg: Dict[str, Any], backbone_scale: str | None) -> Dict[str, Any]:
+    if backbone_scale is None or model_cfg.get("name") != "hybrid_detector":
+        return model_cfg
+    merged = dict(model_cfg)
+    merged.update(BACKBONE_SCALE_OVERRIDES[backbone_scale])
+    return merged
+
+
 def _apply_train_overrides(config: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
     config = dict(config)
     train_cfg = dict(config.get("train", {}))
     model_cfg = dict(config.get("model", {}))
 
     model_cfg = _apply_variant_override(model_cfg=model_cfg, variant=args.variant)
+    model_cfg = _apply_backbone_scale_override(model_cfg=model_cfg, backbone_scale=args.backbone_scale)
 
     if args.device is not None:
         config["device"] = args.device
@@ -110,8 +138,14 @@ def _apply_train_overrides(config: Dict[str, Any], args: argparse.Namespace) -> 
     if args.max_detections is not None:
         model_cfg["max_detections"] = int(args.max_detections)
 
-    if args.variant is not None and args.experiment_name is None:
-        config["experiment_name"] = f"hybrid_{args.variant}"
+    if args.experiment_name is None:
+        experiment_parts = []
+        if args.variant is not None:
+            experiment_parts.append(args.variant)
+        if args.backbone_scale is not None and args.backbone_scale != "default":
+            experiment_parts.append(args.backbone_scale)
+        if experiment_parts:
+            config["experiment_name"] = "hybrid_" + "_".join(experiment_parts)
 
     config["train"] = train_cfg
     config["model"] = model_cfg

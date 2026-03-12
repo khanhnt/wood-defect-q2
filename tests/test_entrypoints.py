@@ -12,6 +12,7 @@ def test_train_script_uses_shared_model_builder():
     assert "from src.models.builder import build_model" in content
     assert "model = build_model(model_config=model_cfg, train_config=config.get(\"train\", {}))" in content
     assert "--variant" in content
+    assert "--backbone-scale" in content
     assert "--epochs" in content
     assert "--max-train-samples" in content
     assert "--max-val-samples" in content
@@ -23,6 +24,7 @@ def test_evaluate_script_uses_shared_model_builder():
     assert "from src.models.builder import build_model" in content
     assert "model = build_model(model_config=model_cfg, train_config=config.get(\"train\", {}))" in content
     assert "--variant" in content
+    assert "--backbone-scale" in content
     assert "--max-samples" in content
     assert "--in-domain-summary-path" in content
     assert "--score-threshold" in content
