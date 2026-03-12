@@ -159,19 +159,7 @@ def build_baseline_detector(model_config: Dict[str, Any], train_config: Dict[str
     if trainable_backbone_layers is not None:
         detector_kwargs["trainable_backbone_layers"] = trainable_backbone_layers
 
-    if small_defect_profile == "small":
-        anchor_sizes = ((8,), (16,), (32,), (64,), (128,))
-        aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
-        detector_kwargs.update(
-            {
-                "rpn_anchor_generator": AnchorGenerator(anchor_sizes, aspect_ratios),
-                "rpn_pre_nms_top_n_train": int(model_config.get("rpn_pre_nms_top_n_train", 3000)),
-                "rpn_pre_nms_top_n_test": int(model_config.get("rpn_pre_nms_top_n_test", 2000)),
-                "rpn_post_nms_top_n_train": int(model_config.get("rpn_post_nms_top_n_train", 1500)),
-                "rpn_post_nms_top_n_test": int(model_config.get("rpn_post_nms_top_n_test", 1000)),
-            }
-        )
-    elif small_defect_profile != "none":
+    if small_defect_profile not in {"none", "small"}:
         raise ValueError(f"Unsupported small_defect_profile={small_defect_profile!r}.")
 
     detector = None
@@ -224,4 +212,12 @@ def build_baseline_detector(model_config: Dict[str, Any], train_config: Dict[str
     detector.roi_heads.detections_per_img = int(model_config.get("max_detections", 100))
     detector.roi_heads.score_thresh = float(model_config.get("score_threshold", 0.05))
     detector.roi_heads.nms_thresh = float(model_config.get("nms_threshold", 0.5))
+    if small_defect_profile == "small":
+        anchor_sizes = ((8,), (16,), (32,), (64,), (128,))
+        aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
+        detector.rpn.anchor_generator = AnchorGenerator(anchor_sizes, aspect_ratios)
+        detector.rpn._pre_nms_top_n["training"] = int(model_config.get("rpn_pre_nms_top_n_train", 3000))
+        detector.rpn._pre_nms_top_n["testing"] = int(model_config.get("rpn_pre_nms_top_n_test", 2000))
+        detector.rpn._post_nms_top_n["training"] = int(model_config.get("rpn_post_nms_top_n_train", 1500))
+        detector.rpn._post_nms_top_n["testing"] = int(model_config.get("rpn_post_nms_top_n_test", 1000))
     return detector
