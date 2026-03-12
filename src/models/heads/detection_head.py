@@ -213,8 +213,9 @@ def build_baseline_detector(model_config: Dict[str, Any], train_config: Dict[str
     detector.roi_heads.score_thresh = float(model_config.get("score_threshold", 0.05))
     detector.roi_heads.nms_thresh = float(model_config.get("nms_threshold", 0.5))
     if small_defect_profile == "small":
-        anchor_sizes = ((8,), (16,), (32,), (64,), (128,))
-        aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
+        num_feature_maps = len(detector.rpn.anchor_generator.sizes)
+        anchor_sizes = tuple((int(8 * (2**level_index)),) for level_index in range(num_feature_maps))
+        aspect_ratios = tuple((0.5, 1.0, 2.0) for _ in range(num_feature_maps))
         detector.rpn.anchor_generator = AnchorGenerator(anchor_sizes, aspect_ratios)
         detector.rpn._pre_nms_top_n["training"] = int(model_config.get("rpn_pre_nms_top_n_train", 3000))
         detector.rpn._pre_nms_top_n["testing"] = int(model_config.get("rpn_pre_nms_top_n_test", 2000))
