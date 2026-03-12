@@ -212,16 +212,17 @@ class HybridDetector(nn.Module):
     def _compute_point_weights(self, ltrb_targets: torch.Tensor) -> torch.Tensor:
         left_right = ltrb_targets[:, [0, 2]]
         top_bottom = ltrb_targets[:, [1, 3]]
-        return torch.sqrt(
+        weights = torch.sqrt(
             (
-                left_right.min(dim=-1).values
+                left_right.min(dim=-1).values.clamp(min=0.0)
                 / left_right.max(dim=-1).values.clamp(min=1e-6)
             )
             * (
-                top_bottom.min(dim=-1).values
+                top_bottom.min(dim=-1).values.clamp(min=0.0)
                 / top_bottom.max(dim=-1).values.clamp(min=1e-6)
             )
         )
+        return torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _split_flat_targets_by_level(
         self,
@@ -304,6 +305,12 @@ class HybridDetector(nn.Module):
         for gt_index in range(boxes.shape[0]):
             gt_box = boxes[gt_index : gt_index + 1]
             gt_center = gt_centers[gt_index]
+            all_inside_box = (
+                (all_centers[:, 0] >= gt_box[0, 0])
+                & (all_centers[:, 0] <= gt_box[0, 2])
+                & (all_centers[:, 1] >= gt_box[0, 1])
+                & (all_centers[:, 1] <= gt_box[0, 3])
+            )
             candidate_indices = []
 
             for level_name in level_names:
@@ -335,16 +342,14 @@ class HybridDetector(nn.Module):
             positive_scores = candidate_ious[positive_mask]
 
             if positive_indices.numel() == 0:
-                inside_indices = candidate_indices[inside_box]
-                inside_scores = candidate_ious[inside_box]
-                if inside_indices.numel() > 0:
-                    best_index = int(inside_scores.argmax().item())
-                    positive_indices = inside_indices[best_index : best_index + 1]
-                    positive_scores = inside_scores[best_index : best_index + 1]
-                else:
-                    best_index = int(candidate_ious.argmax().item())
-                    positive_indices = candidate_indices[best_index : best_index + 1]
-                    positive_scores = candidate_ious[best_index : best_index + 1]
+                global_inside_indices = all_inside_box.nonzero(as_tuple=False).squeeze(1)
+                if global_inside_indices.numel() == 0:
+                    continue
+                global_inside_boxes = all_reference_boxes[global_inside_indices]
+                global_inside_ious = pairwise_box_iou(global_inside_boxes, gt_box).squeeze(1)
+                best_index = int(global_inside_ious.argmax().item())
+                positive_indices = global_inside_indices[best_index : best_index + 1]
+                positive_scores = global_inside_ious[best_index : best_index + 1]
 
             gt_area = gt_areas[gt_index]
             current_scores = assigned_scores[positive_indices]

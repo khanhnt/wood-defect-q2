@@ -147,6 +147,11 @@ class Trainer:
                 optimizer.zero_grad(set_to_none=True)
                 loss_dict = self.model(images, targets)
                 reduced_loss_dict = compute_detection_loss(loss_dict)
+                if not torch.isfinite(reduced_loss_dict["loss_total"]):
+                    debug_losses = detach_loss_dict(reduced_loss_dict)
+                    raise ValueError(
+                        f"Non-finite training loss detected in {self.experiment_name}: {debug_losses}"
+                    )
                 reduced_loss_dict["loss_total"].backward()
                 optimizer.step()
 
