@@ -49,6 +49,11 @@ class HybridDetector(nn.Module):
         num_head_convs: int = 2,
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
+        classification_prior: float = 0.01,
+        centerness_prior: float = 0.01,
+        normalize_inputs: bool = True,
+        input_mean: Sequence[float] = (0.485, 0.456, 0.406),
+        input_std: Sequence[float] = (0.229, 0.224, 0.225),
     ) -> None:
         super().__init__()
         if use_transformer and num_transformer_blocks not in {1, 2}:
@@ -73,6 +78,7 @@ class HybridDetector(nn.Module):
         self.centerness_loss_weight = float(centerness_loss_weight)
         self.focal_alpha = float(focal_alpha)
         self.focal_gamma = float(focal_gamma)
+        self.normalize_inputs = bool(normalize_inputs)
 
         self.transformer_levels = _normalize_transformer_levels(
             levels=transformer_levels,
@@ -96,7 +102,13 @@ class HybridDetector(nn.Module):
             num_classes=num_classes,
             in_channels=neck_out_channels,
             num_head_convs=num_head_convs,
+            classification_prior=classification_prior,
+            centerness_prior=centerness_prior,
         )
+        mean_tensor = torch.tensor(list(input_mean), dtype=torch.float32).view(1, -1, 1, 1)
+        std_tensor = torch.tensor(list(input_std), dtype=torch.float32).view(1, -1, 1, 1)
+        self.register_buffer("input_mean", mean_tensor, persistent=False)
+        self.register_buffer("input_std", std_tensor, persistent=False)
 
     def get_variant_name(self) -> str:
         """Return a short ablation label for logging and debugging."""
@@ -109,6 +121,8 @@ class HybridDetector(nn.Module):
 
     def _forward_dense(self, x: torch.Tensor) -> Dict[str, Any]:
         """Return backbone features, neck features, and dense prediction tensors."""
+        if self.normalize_inputs:
+            x = (x - self.input_mean) / self.input_std.clamp(min=1e-6)
         backbone_features = self.backbone(x)
         refined_features = dict(backbone_features)
 
@@ -217,7 +231,7 @@ class HybridDetector(nn.Module):
         b = y2 - center_y
         ltrb = torch.stack((l, t, r, b), dim=-1)
 
-        inside_box = ltrb.min(dim=-1).values > 0.0
+        inside_box = ltrb.min(dim=-1).values >= 0.0
         max_regression = ltrb.max(dim=-1).values
         lower_bound, upper_bound = regression_ranges[level_name]
         in_range = max_regression >= lower_bound
@@ -239,6 +253,13 @@ class HybridDetector(nn.Module):
         )
 
         valid_locations = inside_box & in_range & inside_center
+        missing_gt_mask = ~valid_locations.any(dim=0)
+        if missing_gt_mask.any():
+            fallback_locations = inside_box & in_range
+            for gt_index in missing_gt_mask.nonzero(as_tuple=False).squeeze(1):
+                if fallback_locations[:, gt_index].any():
+                    valid_locations[:, gt_index] = fallback_locations[:, gt_index]
+
         gt_areas = ((x2 - x1) * (y2 - y1)).expand(num_points, -1).clone()
         gt_areas[~valid_locations] = float("inf")
         min_areas, matched_indices = gt_areas.min(dim=1)
@@ -362,6 +383,7 @@ class HybridDetector(nn.Module):
         box_loss = torch.tensor(0.0, device=next(self.parameters()).device)
         centerness_loss = torch.tensor(0.0, device=next(self.parameters()).device)
         total_positive = 0
+        box_weight_sum = torch.tensor(0.0, device=next(self.parameters()).device)
 
         for level_name in dense_outputs["feature_levels"]:
             cls_logits = dense_outputs["cls_logits"][level_name].permute(0, 2, 3, 1).reshape(-1, self.num_classes)
@@ -390,11 +412,14 @@ class HybridDetector(nn.Module):
 
             if positive_mask.any():
                 pred_boxes = self._decode_ltrb_to_xyxy(centers[positive_mask], bbox_regression[positive_mask])
-                box_loss = box_loss + generalized_box_iou_loss(
+                box_weights = centerness_targets[positive_mask]
+                box_losses = generalized_box_iou_loss(
                     pred_boxes,
                     target_boxes[positive_mask],
-                    reduction="sum",
+                    reduction="none",
                 )
+                box_loss = box_loss + (box_losses * box_weights).sum()
+                box_weight_sum = box_weight_sum + box_weights.sum()
                 centerness_loss = centerness_loss + F.binary_cross_entropy_with_logits(
                     centerness_logits[positive_mask],
                     centerness_targets[positive_mask],
@@ -402,9 +427,10 @@ class HybridDetector(nn.Module):
                 )
 
         normalizer = max(total_positive, 1)
+        box_normalizer = torch.clamp(box_weight_sum, min=1.0)
         return {
             "loss_cls": (cls_loss / normalizer) * self.cls_loss_weight,
-            "loss_box_reg": (box_loss / normalizer) * self.box_loss_weight,
+            "loss_box_reg": (box_loss / box_normalizer) * self.box_loss_weight,
             "loss_centerness": (centerness_loss / normalizer) * self.centerness_loss_weight,
         }
 
@@ -586,4 +612,9 @@ def build_hybrid_detector(model_config: Dict[str, Any], train_config: Dict[str, 
         num_head_convs=int(model_config.get("num_head_convs", 2)),
         focal_alpha=float(model_config.get("focal_alpha", 0.25)),
         focal_gamma=float(model_config.get("focal_gamma", 2.0)),
+        classification_prior=float(model_config.get("classification_prior", 0.01)),
+        centerness_prior=float(model_config.get("centerness_prior", 0.01)),
+        normalize_inputs=bool(model_config.get("normalize_inputs", True)),
+        input_mean=tuple(model_config.get("input_mean", (0.485, 0.456, 0.406))),
+        input_std=tuple(model_config.get("input_std", (0.229, 0.224, 0.225))),
     )

@@ -197,12 +197,13 @@ class Trainer:
             self._save_checkpoint("last.pt", epoch, optimizer, best_metric_value, class_names)
 
             logger.info(
-                "Epoch %d/%d | train_loss=%.4f | val_mAP50=%.4f | val_mAP50_95=%.4f",
+                "Epoch %d/%d | train_loss=%.4f | val_mAP50=%.4f | val_mAP50_95=%.4f | val_preds=%d",
                 epoch,
                 epochs,
                 averaged_losses.get("train_loss_total", 0.0),
                 float(val_payload["summary"].get("mAP50", 0.0)),
                 float(val_payload["summary"].get("mAP50_95", 0.0)),
+                int(val_payload["summary"].get("num_predictions", 0)),
             )
 
         training_summary = {

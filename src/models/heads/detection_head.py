@@ -41,6 +41,7 @@ class DetectionHead(nn.Module):
         in_channels: int = 128,
         num_head_convs: int = 2,
         classification_prior: float = 0.01,
+        centerness_prior: float = 0.01,
     ) -> None:
         super().__init__()
         self.num_classes = int(num_classes)
@@ -74,9 +75,12 @@ class DetectionHead(nn.Module):
             stride=1,
             padding=1,
         )
-        self._init_parameters(classification_prior=classification_prior)
+        self._init_parameters(
+            classification_prior=classification_prior,
+            centerness_prior=centerness_prior,
+        )
 
-    def _init_parameters(self, classification_prior: float) -> None:
+    def _init_parameters(self, classification_prior: float, centerness_prior: float) -> None:
         modules = [
             self.classification_tower,
             self.regression_tower,
@@ -92,7 +96,9 @@ class DetectionHead(nn.Module):
                         nn.init.constant_(child.bias, 0.0)
 
         prior_bias = -math.log((1.0 - classification_prior) / classification_prior)
+        centerness_bias = -math.log((1.0 - centerness_prior) / centerness_prior)
         nn.init.constant_(self.classification_head.bias, prior_bias)
+        nn.init.constant_(self.centerness_head.bias, centerness_bias)
 
     def forward(self, features: Mapping[str, torch.Tensor]):
         """Predict dense logits, centerness, and box deltas for each pyramid level."""

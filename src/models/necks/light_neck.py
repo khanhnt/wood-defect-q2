@@ -9,6 +9,14 @@ import torch.nn.functional as F
 from torch import nn
 
 
+def _resolve_group_count(channels: int, preferred_groups: int = 8) -> int:
+    """Pick a small GroupNorm group count that divides the channel width."""
+    for groups in (preferred_groups, 4, 2, 1):
+        if channels % groups == 0:
+            return groups
+    return 1
+
+
 class _ConvNormAct(nn.Sequential):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int, groups: int = 1) -> None:
         padding = kernel_size // 2
@@ -22,7 +30,7 @@ class _ConvNormAct(nn.Sequential):
                 groups=groups,
                 bias=False,
             ),
-            nn.BatchNorm2d(out_channels),
+            nn.GroupNorm(_resolve_group_count(out_channels), out_channels),
             nn.SiLU(inplace=True),
         )
 
