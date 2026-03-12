@@ -236,6 +236,10 @@ class ManifestDetectionDataset(Dataset):
             "image_id": record["image_id"],
             "dataset_name": record["dataset_name"],
             "resolved_split": record.get("resolved_split"),
+            "source_image_id": record.get("source_image_id"),
+            "tile_origin_xy": record.get("tile_origin_xy"),
+            "record_width": int(record["width"]),
+            "record_height": int(record["height"]),
         }
         return image_tensor, target, metadata
 

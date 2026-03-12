@@ -13,8 +13,8 @@ from src.datasets.label_mapping import (
     remap_predictions_and_targets_for_cross_dataset,
     resolve_cross_dataset_label_mapping,
 )
-from src.datasets.manifest_detection_dataset import build_detection_dataloader
-from src.metrics.detection_metrics import compute_detection_metrics
+from src.datasets.manifest_detection_dataset import build_detection_dataloader, load_manifest_records
+from src.metrics.detection_metrics import _to_numpy, box_iou_numpy, compute_detection_metrics
 from src.utils.io import ensure_dir, save_csv, save_json, save_jsonl
 from src.utils.logger import setup_logger
 
@@ -72,13 +72,181 @@ class Evaluator:
         self.model.load_state_dict(state_dict)
         return checkpoint
 
+    def _infer_source_manifest_path(self, dataset_config: Dict[str, Any]) -> Path | None:
+        explicit_path = self.config.get("evaluation", {}).get("source_manifest_path")
+        if explicit_path:
+            candidate = Path(explicit_path)
+            if candidate.exists():
+                return candidate
+
+        dataset_name = dataset_config.get("dataset_name")
+        if not dataset_name:
+            return None
+        candidate = Path("data/processed") / f"{dataset_name}_manifest.jsonl"
+        if candidate.exists():
+            return candidate
+        return None
+
+    def _nms_numpy(self, boxes: Any, scores: Any, iou_threshold: float) -> list[int]:
+        boxes_array = _to_numpy(boxes).astype("float32")
+        scores_array = _to_numpy(scores).astype("float32")
+        if boxes_array.size == 0:
+            return []
+
+        order = scores_array.argsort()[::-1]
+        keep: list[int] = []
+
+        while order.size > 0:
+            current = int(order[0])
+            keep.append(current)
+            if order.size == 1:
+                break
+            remaining = order[1:]
+            ious = box_iou_numpy(boxes_array[current : current + 1], boxes_array[remaining])[0]
+            order = remaining[ious <= float(iou_threshold)]
+
+        return keep
+
+    def _merge_tile_predictions(
+        self,
+        predictions: Sequence[Dict[str, Any]],
+        merge_iou_threshold: float,
+    ) -> list[Dict[str, Any]]:
+        grouped_predictions: Dict[str, Dict[str, list[Any]]] = {}
+
+        for prediction in predictions:
+            source_image_id = prediction.get("source_image_id") or prediction["image_id"]
+            tile_origin = prediction.get("tile_origin_xy") or [0, 0]
+            offset_x = float(tile_origin[0])
+            offset_y = float(tile_origin[1])
+
+            grouped_predictions.setdefault(
+                source_image_id,
+                {"boxes": [], "scores": [], "labels": []},
+            )
+
+            boxes = prediction["boxes"].clone().cpu()
+            if boxes.numel() > 0:
+                boxes[:, 0] += offset_x
+                boxes[:, 2] += offset_x
+                boxes[:, 1] += offset_y
+                boxes[:, 3] += offset_y
+
+            grouped_predictions[source_image_id]["boxes"].append(boxes)
+            grouped_predictions[source_image_id]["scores"].append(prediction["scores"].clone().cpu())
+            grouped_predictions[source_image_id]["labels"].append(prediction["labels"].clone().cpu())
+
+        merged_predictions: list[Dict[str, Any]] = []
+        for source_image_id, grouped in grouped_predictions.items():
+            boxes = torch.cat(grouped["boxes"], dim=0) if grouped["boxes"] else torch.zeros((0, 4), dtype=torch.float32)
+            scores = torch.cat(grouped["scores"], dim=0) if grouped["scores"] else torch.zeros((0,), dtype=torch.float32)
+            labels = torch.cat(grouped["labels"], dim=0) if grouped["labels"] else torch.zeros((0,), dtype=torch.int64)
+
+            kept_indices: list[int] = []
+            for class_id in labels.unique(sorted=True).tolist():
+                class_mask = labels == int(class_id)
+                class_indices = class_mask.nonzero(as_tuple=False).squeeze(1).cpu().numpy()
+                if class_indices.size == 0:
+                    continue
+                class_keep_local = self._nms_numpy(
+                    boxes[class_indices],
+                    scores[class_indices],
+                    iou_threshold=merge_iou_threshold,
+                )
+                kept_indices.extend(class_indices[index] for index in class_keep_local)
+
+            if kept_indices:
+                keep_tensor = torch.as_tensor(
+                    kept_indices,
+                    dtype=torch.long,
+                )
+                keep_tensor = keep_tensor[scores[keep_tensor].argsort(descending=True)]
+                boxes = boxes[keep_tensor]
+                scores = scores[keep_tensor]
+                labels = labels[keep_tensor]
+            else:
+                boxes = torch.zeros((0, 4), dtype=torch.float32)
+                scores = torch.zeros((0,), dtype=torch.float32)
+                labels = torch.zeros((0,), dtype=torch.int64)
+
+            merged_predictions.append(
+                {
+                    "image_id": source_image_id,
+                    "boxes": boxes,
+                    "labels": labels,
+                    "scores": scores,
+                }
+            )
+
+        return merged_predictions
+
+    def _load_source_level_targets(
+        self,
+        dataset_config: Dict[str, Any],
+        source_image_ids: Sequence[str],
+    ) -> tuple[list[Dict[str, Any]], list[str], str]:
+        source_manifest_path = self._infer_source_manifest_path(dataset_config)
+        if source_manifest_path is None:
+            raise FileNotFoundError(
+                "Tile-aware merge evaluation needs a source-level manifest. "
+                "Set evaluation.source_manifest_path or place the source manifest under data/processed."
+            )
+
+        source_records, source_meta = load_manifest_records(
+            dataset_config_or_path={"manifest_path": str(source_manifest_path), "dataset_name": dataset_config.get("dataset_name")},
+            split=None,
+        )
+        source_ids = set(source_image_ids)
+        filtered_targets: list[Dict[str, Any]] = []
+
+        for record in source_records:
+            if record["image_id"] not in source_ids:
+                continue
+
+            boxes = []
+            labels = []
+            for annotation in record.get("annotations", []):
+                x1, y1, x2, y2 = annotation["bbox_xyxy_norm"]
+                width = float(record["width"])
+                height = float(record["height"])
+                boxes.append(
+                    [
+                        float(x1) * width,
+                        float(y1) * height,
+                        float(x2) * width,
+                        float(y2) * height,
+                    ]
+                )
+                labels.append(int(annotation["class_id"]))
+
+            filtered_targets.append(
+                {
+                    "image_id": record["image_id"],
+                    "boxes": torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4),
+                    "labels": torch.as_tensor(labels, dtype=torch.int64),
+                }
+            )
+
+        if not filtered_targets:
+            raise ValueError(
+                "Tile-merge evaluation could not match any source-level targets. "
+                "Check source_manifest_path and source_image_id fields in the processed manifest."
+            )
+
+        return filtered_targets, list(source_meta["class_names"]), str(source_manifest_path)
+
     def _prediction_to_serializable(self, prediction: Dict[str, Any]) -> Dict[str, Any]:
-        return {
+        payload = {
             "image_id": prediction["image_id"],
             "boxes": torch.as_tensor(prediction["boxes"]).cpu().tolist(),
             "labels": torch.as_tensor(prediction["labels"]).cpu().tolist(),
             "scores": torch.as_tensor(prediction["scores"]).cpu().tolist(),
         }
+        if prediction.get("source_image_id") is not None:
+            payload["source_image_id"] = prediction["source_image_id"]
+        if prediction.get("tile_origin_xy") is not None:
+            payload["tile_origin_xy"] = prediction["tile_origin_xy"]
+        return payload
 
     def _load_summary_json(self, path: str | Path | None) -> Dict[str, Any] | None:
         if not path:
@@ -212,6 +380,8 @@ class Evaluator:
         experiment_name = experiment_name or self.config.get("experiment_name", "baseline_detector")
         score_threshold = float(self.config.get("evaluation", {}).get("score_threshold", 0.05))
         eval_cfg = self.config.get("evaluation", {})
+        tile_merge_enabled = bool(eval_cfg.get("tile_merge", False))
+        tile_merge_iou_threshold = float(eval_cfg.get("tile_merge_iou_threshold", 0.5))
 
         self.model.to(self.device)
         self.model.eval()
@@ -231,6 +401,8 @@ class Evaluator:
                             "boxes": output["boxes"].detach().cpu(),
                             "labels": torch.clamp(output["labels"].detach().cpu() - 1, min=0),
                             "scores": output["scores"].detach().cpu(),
+                            "source_image_id": meta.get("source_image_id"),
+                            "tile_origin_xy": meta.get("tile_origin_xy"),
                         }
                     )
                     targets.append(
@@ -249,6 +421,24 @@ class Evaluator:
         metric_class_names = target_class_names
         mapping_report = None
         cross_dataset_summary = None
+        source_manifest_path = None
+
+        if tile_merge_enabled:
+            if bool(eval_cfg.get("compute_cross_dataset", False)):
+                raise ValueError("Tile-merge evaluation is not supported together with cross-dataset remapping.")
+
+            source_image_ids = [
+                prediction.get("source_image_id") or prediction["image_id"]
+                for prediction in predictions
+            ]
+            metric_predictions = self._merge_tile_predictions(
+                predictions=predictions,
+                merge_iou_threshold=tile_merge_iou_threshold,
+            )
+            metric_targets, metric_class_names, source_manifest_path = self._load_source_level_targets(
+                dataset_config=dataset_config,
+                source_image_ids=source_image_ids,
+            )
 
         if bool(eval_cfg.get("compute_cross_dataset", False)):
             mapping_report = resolve_cross_dataset_label_mapping(
@@ -287,8 +477,15 @@ class Evaluator:
                 "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
                 "class_names": list(metric_class_names),
                 "evaluation_mode": "cross_dataset" if mapping_report is not None else "in_domain",
+                "tile_merge": tile_merge_enabled,
             }
         )
+        if tile_merge_enabled:
+            summary["evaluation_mode"] = "tile_merge_in_domain"
+            summary["tile_merge_iou_threshold"] = tile_merge_iou_threshold
+            summary["source_manifest_path"] = source_manifest_path
+            summary["num_tile_images"] = len(predictions)
+            summary["num_merged_images"] = len(metric_targets)
         if cross_dataset_summary is not None:
             summary.update(cross_dataset_summary)
 
@@ -300,8 +497,9 @@ class Evaluator:
 
             if self.config.get("evaluation", {}).get("save_predictions", False):
                 predictions_path = self.tables_dir / f"{experiment_name}_{resolved_split}_predictions.jsonl"
+                serializable_predictions = metric_predictions if tile_merge_enabled else predictions
                 save_jsonl(
-                    [self._prediction_to_serializable(prediction) for prediction in predictions],
+                    [self._prediction_to_serializable(prediction) for prediction in serializable_predictions],
                     predictions_path,
                 )
 

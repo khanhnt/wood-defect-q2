@@ -26,6 +26,8 @@ evaluation:
   batch_size: 1
   num_workers: 0
   score_threshold: 0.05
+  tile_merge: false
+  tile_merge_iou_threshold: 0.5
   save_predictions: false
   save_visualizations: false
   compute_per_class_ap: true

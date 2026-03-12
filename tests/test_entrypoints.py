@@ -30,4 +30,7 @@ def test_evaluate_script_uses_shared_model_builder():
     assert "--max-samples" in content
     assert "--in-domain-summary-path" in content
     assert "--score-threshold" in content
+    assert "--tile-merge" in content
+    assert "--tile-merge-iou-threshold" in content
+    assert "--source-manifest-path" in content
     assert "_apply_eval_overrides" in content

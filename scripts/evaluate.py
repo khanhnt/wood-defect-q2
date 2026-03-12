@@ -54,6 +54,23 @@ def parse_args():
     parser.add_argument("--max-samples", type=int, default=None, help="Optional eval subset size override")
     parser.add_argument("--score-threshold", type=float, default=None, help="Optional eval score threshold override")
     parser.add_argument(
+        "--tile-merge",
+        action="store_true",
+        help="Enable tile-aware prediction merge before scoring.",
+    )
+    parser.add_argument(
+        "--tile-merge-iou-threshold",
+        type=float,
+        default=None,
+        help="Optional IoU threshold for tile-merge NMS.",
+    )
+    parser.add_argument(
+        "--source-manifest-path",
+        type=str,
+        default=None,
+        help="Optional source-image manifest used for tile-merge scoring.",
+    )
+    parser.add_argument(
         "--in-domain-summary-path",
         type=str,
         default=None,
@@ -121,6 +138,12 @@ def _apply_eval_overrides(config: Dict[str, Any], args: argparse.Namespace) -> D
     if args.score_threshold is not None:
         eval_cfg["score_threshold"] = float(args.score_threshold)
         model_cfg["score_threshold"] = float(args.score_threshold)
+    if args.tile_merge:
+        eval_cfg["tile_merge"] = True
+    if args.tile_merge_iou_threshold is not None:
+        eval_cfg["tile_merge_iou_threshold"] = float(args.tile_merge_iou_threshold)
+    if args.source_manifest_path is not None:
+        eval_cfg["source_manifest_path"] = args.source_manifest_path
     if args.backbone is not None:
         model_cfg["backbone"] = args.backbone
     if args.small_defect_profile is not None:
@@ -129,15 +152,20 @@ def _apply_eval_overrides(config: Dict[str, Any], args: argparse.Namespace) -> D
         eval_cfg["in_domain_summary_path"] = args.in_domain_summary_path
     if args.experiment_name is None:
         if args.variant is not None:
-            config["experiment_name"] = f"hybrid_{args.variant}_eval"
+            suffix = "_tilemerge_eval" if args.tile_merge else "_eval"
+            config["experiment_name"] = f"hybrid_{args.variant}{suffix}"
         elif args.backbone is not None or args.small_defect_profile not in {None, "none"}:
             parts = ["baseline"]
             if args.backbone is not None:
                 parts.append(args.backbone)
             if args.small_defect_profile not in {None, "none"}:
                 parts.append(args.small_defect_profile)
+            if args.tile_merge:
+                parts.append("tilemerge")
             parts.append("eval")
             config["experiment_name"] = "_".join(parts)
+        elif args.tile_merge:
+            config["experiment_name"] = "baseline_tilemerge_eval"
 
     config["model"] = model_cfg
     config["evaluation"] = eval_cfg
