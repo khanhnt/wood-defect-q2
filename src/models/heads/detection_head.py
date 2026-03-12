@@ -2,32 +2,57 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import math
+from typing import Any, Dict, Mapping
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
 class _HeadConvBlock(nn.Sequential):
-    """Small conv block for the lightweight dense prediction head."""
+    """Depthwise-separable head block for lightweight dense prediction."""
 
     def __init__(self, channels: int) -> None:
         super().__init__(
-            nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(
+                channels,
+                channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                groups=channels,
+                bias=False,
+            ),
+            nn.GroupNorm(8, channels),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(channels, channels, kernel_size=1, stride=1, padding=0, bias=False),
             nn.GroupNorm(8, channels),
             nn.SiLU(inplace=True),
         )
 
 
 class DetectionHead(nn.Module):
-    """Compact per-level dense head for hybrid feature ablations."""
+    """Compact FCOS-like dense head for hybrid feature ablations."""
 
-    def __init__(self, num_classes: int = 10, in_channels: int = 128, num_head_convs: int = 2) -> None:
+    def __init__(
+        self,
+        num_classes: int = 10,
+        in_channels: int = 128,
+        num_head_convs: int = 2,
+        classification_prior: float = 0.01,
+    ) -> None:
         super().__init__()
         self.num_classes = int(num_classes)
         self.in_channels = int(in_channels)
-        conv_blocks = [_HeadConvBlock(self.in_channels) for _ in range(max(int(num_head_convs), 1))]
-        self.shared_tower = nn.Sequential(*conv_blocks)
+        self.num_head_convs = max(int(num_head_convs), 1)
+
+        self.classification_tower = nn.Sequential(
+            *[_HeadConvBlock(self.in_channels) for _ in range(self.num_head_convs)]
+        )
+        self.regression_tower = nn.Sequential(
+            *[_HeadConvBlock(self.in_channels) for _ in range(self.num_head_convs)]
+        )
         self.classification_head = nn.Conv2d(
             self.in_channels,
             self.num_classes,
@@ -42,33 +67,53 @@ class DetectionHead(nn.Module):
             stride=1,
             padding=1,
         )
-        self.objectness_head = nn.Conv2d(
+        self.centerness_head = nn.Conv2d(
             self.in_channels,
             1,
             kernel_size=3,
             stride=1,
             padding=1,
         )
+        self._init_parameters(classification_prior=classification_prior)
 
-    def forward(self, features):
-        """Predict dense logits and box deltas for each pyramid level."""
+    def _init_parameters(self, classification_prior: float) -> None:
+        modules = [
+            self.classification_tower,
+            self.regression_tower,
+            self.classification_head,
+            self.box_regression_head,
+            self.centerness_head,
+        ]
+        for module in modules:
+            for child in module.modules():
+                if isinstance(child, nn.Conv2d):
+                    nn.init.normal_(child.weight, std=0.01)
+                    if child.bias is not None:
+                        nn.init.constant_(child.bias, 0.0)
+
+        prior_bias = -math.log((1.0 - classification_prior) / classification_prior)
+        nn.init.constant_(self.classification_head.bias, prior_bias)
+
+    def forward(self, features: Mapping[str, torch.Tensor]):
+        """Predict dense logits, centerness, and box deltas for each pyramid level."""
         cls_logits = {}
         bbox_regression = {}
-        objectness = {}
+        centerness = {}
         refined_features = {}
 
         for level_name, feature in features.items():
-            refined_feature = self.shared_tower(feature)
-            refined_features[level_name] = refined_feature
-            cls_logits[level_name] = self.classification_head(refined_feature)
-            bbox_regression[level_name] = torch.relu(self.box_regression_head(refined_feature))
-            objectness[level_name] = self.objectness_head(refined_feature)
+            cls_feature = self.classification_tower(feature)
+            reg_feature = self.regression_tower(feature)
+            refined_features[level_name] = reg_feature
+            cls_logits[level_name] = self.classification_head(cls_feature)
+            bbox_regression[level_name] = F.softplus(self.box_regression_head(reg_feature))
+            centerness[level_name] = self.centerness_head(reg_feature)
 
         return {
             "features": refined_features,
             "cls_logits": cls_logits,
             "bbox_regression": bbox_regression,
-            "objectness": objectness,
+            "centerness": centerness,
         }
 
 
