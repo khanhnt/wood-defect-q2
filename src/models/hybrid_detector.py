@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.losses.detection_loss import generalized_box_iou_loss, sigmoid_focal_loss
+from src.losses.detection_loss import aligned_box_iou, generalized_box_iou_loss, sigmoid_focal_loss
 from src.models.backbones.cnn_backbone import CNNBackbone
 from src.models.backbones.transformer_block import SimpleTransformerBlock
 from src.models.heads.detection_head import DetectionHead
@@ -45,11 +45,13 @@ class HybridDetector(nn.Module):
         center_sampling_radius: float = 1.5,
         box_loss_weight: float = 2.0,
         cls_loss_weight: float = 1.0,
+        quality_loss_weight: float | None = None,
         centerness_loss_weight: float = 1.0,
         num_head_convs: int = 2,
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
         classification_prior: float = 0.01,
+        quality_prior: float | None = None,
         centerness_prior: float = 0.01,
         normalize_inputs: bool = True,
         input_mean: Sequence[float] = (0.485, 0.456, 0.406),
@@ -75,7 +77,10 @@ class HybridDetector(nn.Module):
         self.center_sampling_radius = float(center_sampling_radius)
         self.box_loss_weight = float(box_loss_weight)
         self.cls_loss_weight = float(cls_loss_weight)
-        self.centerness_loss_weight = float(centerness_loss_weight)
+        resolved_quality_loss_weight = quality_loss_weight
+        if resolved_quality_loss_weight is None:
+            resolved_quality_loss_weight = centerness_loss_weight
+        self.quality_loss_weight = float(resolved_quality_loss_weight)
         self.focal_alpha = float(focal_alpha)
         self.focal_gamma = float(focal_gamma)
         self.normalize_inputs = bool(normalize_inputs)
@@ -103,7 +108,7 @@ class HybridDetector(nn.Module):
             in_channels=neck_out_channels,
             num_head_convs=num_head_convs,
             classification_prior=classification_prior,
-            centerness_prior=centerness_prior,
+            quality_prior=quality_prior if quality_prior is not None else centerness_prior,
         )
         mean_tensor = torch.tensor(list(input_mean), dtype=torch.float32).view(1, -1, 1, 1)
         std_tensor = torch.tensor(list(input_std), dtype=torch.float32).view(1, -1, 1, 1)
@@ -159,7 +164,7 @@ class HybridDetector(nn.Module):
         image_width: int,
     ) -> Dict[str, tuple[float, float]]:
         strides: Dict[str, tuple[float, float]] = {}
-        for level_name, feature in dense_outputs["centerness"].items():
+        for level_name, feature in dense_outputs["quality_logits"].items():
             stride_y = float(image_height) / float(feature.shape[-2])
             stride_x = float(image_width) / float(feature.shape[-1])
             strides[level_name] = (stride_y, stride_x)
@@ -208,14 +213,14 @@ class HybridDetector(nn.Module):
         labels_out = torch.full((num_points,), -1, dtype=torch.long, device=device)
         bbox_targets = torch.zeros((num_points, 4), dtype=torch.float32, device=device)
         target_boxes = torch.zeros((num_points, 4), dtype=torch.float32, device=device)
-        centerness_targets = torch.zeros((num_points,), dtype=torch.float32, device=device)
+        point_weights = torch.zeros((num_points,), dtype=torch.float32, device=device)
 
         if boxes.numel() == 0:
             return {
                 "labels": labels_out,
                 "bbox_targets": bbox_targets,
                 "target_boxes": target_boxes,
-                "centerness_targets": centerness_targets,
+                "point_weights": point_weights,
             }
 
         center_x = centers[:, 0].unsqueeze(1)
@@ -270,7 +275,7 @@ class HybridDetector(nn.Module):
                 "labels": labels_out,
                 "bbox_targets": bbox_targets,
                 "target_boxes": target_boxes,
-                "centerness_targets": centerness_targets,
+                "point_weights": point_weights,
             }
 
         positive_indices = positive_mask.nonzero(as_tuple=False).squeeze(1)
@@ -281,7 +286,7 @@ class HybridDetector(nn.Module):
 
         left_right = matched_ltrb[:, [0, 2]]
         top_bottom = matched_ltrb[:, [1, 3]]
-        centerness = torch.sqrt(
+        point_weight = torch.sqrt(
             (
                 left_right.min(dim=-1).values
                 / left_right.max(dim=-1).values.clamp(min=1e-6)
@@ -295,12 +300,12 @@ class HybridDetector(nn.Module):
         labels_out[positive_indices] = matched_labels
         bbox_targets[positive_indices] = matched_ltrb
         target_boxes[positive_indices] = matched_boxes
-        centerness_targets[positive_indices] = centerness
+        point_weights[positive_indices] = point_weight
         return {
             "labels": labels_out,
             "bbox_targets": bbox_targets,
             "target_boxes": target_boxes,
-            "centerness_targets": centerness_targets,
+            "point_weights": point_weights,
         }
 
     def _prepare_level_targets(
@@ -319,7 +324,7 @@ class HybridDetector(nn.Module):
             labels_per_image = []
             bbox_per_image = []
             target_boxes_per_image = []
-            centerness_per_image = []
+            point_weights_per_image = []
             centers_per_image = []
 
             for image_index in range(batch_size):
@@ -344,14 +349,14 @@ class HybridDetector(nn.Module):
                 labels_per_image.append(encoded_targets["labels"])
                 bbox_per_image.append(encoded_targets["bbox_targets"])
                 target_boxes_per_image.append(encoded_targets["target_boxes"])
-                centerness_per_image.append(encoded_targets["centerness_targets"])
+                point_weights_per_image.append(encoded_targets["point_weights"])
                 centers_per_image.append(centers)
 
             target_bundle[level_name] = {
                 "labels": torch.stack(labels_per_image, dim=0),
                 "bbox_targets": torch.stack(bbox_per_image, dim=0),
                 "target_boxes": torch.stack(target_boxes_per_image, dim=0),
-                "centerness_targets": torch.stack(centerness_per_image, dim=0),
+                "point_weights": torch.stack(point_weights_per_image, dim=0),
                 "centers": torch.stack(centers_per_image, dim=0),
             }
         return target_bundle
@@ -381,21 +386,20 @@ class HybridDetector(nn.Module):
 
         cls_loss = torch.tensor(0.0, device=next(self.parameters()).device)
         box_loss = torch.tensor(0.0, device=next(self.parameters()).device)
-        centerness_loss = torch.tensor(0.0, device=next(self.parameters()).device)
+        quality_loss = torch.tensor(0.0, device=next(self.parameters()).device)
         total_positive = 0
         box_weight_sum = torch.tensor(0.0, device=next(self.parameters()).device)
 
         for level_name in dense_outputs["feature_levels"]:
             cls_logits = dense_outputs["cls_logits"][level_name].permute(0, 2, 3, 1).reshape(-1, self.num_classes)
             bbox_regression = dense_outputs["bbox_regression"][level_name].permute(0, 2, 3, 1).reshape(-1, 4)
-            centerness_logits = dense_outputs["centerness"][level_name].permute(0, 2, 3, 1).reshape(-1)
+            quality_logits = dense_outputs["quality_logits"][level_name].permute(0, 2, 3, 1).reshape(-1)
 
             level_targets = target_bundle[level_name]
             labels = level_targets["labels"].reshape(-1)
-            bbox_targets = level_targets["bbox_targets"].reshape(-1, 4)
             target_boxes = level_targets["target_boxes"].reshape(-1, 4)
             centers = level_targets["centers"].reshape(-1, 2)
-            centerness_targets = level_targets["centerness_targets"].reshape(-1)
+            point_weights = level_targets["point_weights"].reshape(-1)
             positive_mask = labels >= 0
             total_positive += int(positive_mask.sum().item())
 
@@ -412,7 +416,7 @@ class HybridDetector(nn.Module):
 
             if positive_mask.any():
                 pred_boxes = self._decode_ltrb_to_xyxy(centers[positive_mask], bbox_regression[positive_mask])
-                box_weights = centerness_targets[positive_mask]
+                box_weights = point_weights[positive_mask]
                 box_losses = generalized_box_iou_loss(
                     pred_boxes,
                     target_boxes[positive_mask],
@@ -420,9 +424,10 @@ class HybridDetector(nn.Module):
                 )
                 box_loss = box_loss + (box_losses * box_weights).sum()
                 box_weight_sum = box_weight_sum + box_weights.sum()
-                centerness_loss = centerness_loss + F.binary_cross_entropy_with_logits(
-                    centerness_logits[positive_mask],
-                    centerness_targets[positive_mask],
+                quality_targets = aligned_box_iou(pred_boxes.detach(), target_boxes[positive_mask]).clamp(0.0, 1.0)
+                quality_loss = quality_loss + F.binary_cross_entropy_with_logits(
+                    quality_logits[positive_mask],
+                    quality_targets,
                     reduction="sum",
                 )
 
@@ -431,7 +436,7 @@ class HybridDetector(nn.Module):
         return {
             "loss_cls": (cls_loss / normalizer) * self.cls_loss_weight,
             "loss_box_reg": (box_loss / box_normalizer) * self.box_loss_weight,
-            "loss_centerness": (centerness_loss / normalizer) * self.centerness_loss_weight,
+            "loss_quality": (quality_loss / normalizer) * self.quality_loss_weight,
         }
 
     def _nms(self, boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torch.Tensor:
@@ -506,7 +511,7 @@ class HybridDetector(nn.Module):
             for level_name in level_names:
                 cls_logits = dense_outputs["cls_logits"][level_name][batch_index]
                 bbox_regression = dense_outputs["bbox_regression"][level_name][batch_index]
-                centerness_logits = dense_outputs["centerness"][level_name][batch_index, 0]
+                quality_logits = dense_outputs["quality_logits"][level_name][batch_index, 0]
                 _, height, width = cls_logits.shape
                 stride_y = float(image_height) / float(height)
                 stride_x = float(image_width) / float(width)
@@ -519,8 +524,8 @@ class HybridDetector(nn.Module):
                 )
 
                 cls_scores = torch.sigmoid(cls_logits).permute(1, 2, 0).reshape(-1, self.num_classes)
-                centerness = torch.sigmoid(centerness_logits).reshape(-1, 1)
-                combined_scores = cls_scores * centerness
+                quality_scores = torch.sigmoid(quality_logits).reshape(-1, 1)
+                combined_scores = cls_scores * quality_scores
                 point_scores, class_indices = combined_scores.max(dim=1)
                 candidate_mask = point_scores >= self.score_threshold
                 if not candidate_mask.any():
@@ -606,11 +611,21 @@ def build_hybrid_detector(model_config: Dict[str, Any], train_config: Dict[str, 
         center_sampling_radius=float(model_config.get("center_sampling_radius", 1.5)),
         box_loss_weight=float(model_config.get("box_loss_weight", 2.0)),
         cls_loss_weight=float(model_config.get("cls_loss_weight", 1.0)),
+        quality_loss_weight=(
+            float(model_config["quality_loss_weight"])
+            if "quality_loss_weight" in model_config
+            else None
+        ),
         centerness_loss_weight=float(model_config.get("centerness_loss_weight", 1.0)),
         num_head_convs=int(model_config.get("num_head_convs", 2)),
         focal_alpha=float(model_config.get("focal_alpha", 0.25)),
         focal_gamma=float(model_config.get("focal_gamma", 2.0)),
         classification_prior=float(model_config.get("classification_prior", 0.01)),
+        quality_prior=(
+            float(model_config["quality_prior"])
+            if "quality_prior" in model_config
+            else None
+        ),
         centerness_prior=float(model_config.get("centerness_prior", 0.01)),
         normalize_inputs=bool(model_config.get("normalize_inputs", True)),
         input_mean=tuple(model_config.get("input_mean", (0.485, 0.456, 0.406))),

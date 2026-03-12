@@ -33,7 +33,7 @@ class _HeadConvBlock(nn.Sequential):
 
 
 class DetectionHead(nn.Module):
-    """Compact FCOS-like dense head for hybrid feature ablations."""
+    """Compact quality-aware dense head for hybrid feature ablations."""
 
     def __init__(
         self,
@@ -41,7 +41,7 @@ class DetectionHead(nn.Module):
         in_channels: int = 128,
         num_head_convs: int = 2,
         classification_prior: float = 0.01,
-        centerness_prior: float = 0.01,
+        quality_prior: float = 0.01,
     ) -> None:
         super().__init__()
         self.num_classes = int(num_classes)
@@ -68,7 +68,7 @@ class DetectionHead(nn.Module):
             stride=1,
             padding=1,
         )
-        self.centerness_head = nn.Conv2d(
+        self.quality_head = nn.Conv2d(
             self.in_channels,
             1,
             kernel_size=3,
@@ -77,16 +77,16 @@ class DetectionHead(nn.Module):
         )
         self._init_parameters(
             classification_prior=classification_prior,
-            centerness_prior=centerness_prior,
+            quality_prior=quality_prior,
         )
 
-    def _init_parameters(self, classification_prior: float, centerness_prior: float) -> None:
+    def _init_parameters(self, classification_prior: float, quality_prior: float) -> None:
         modules = [
             self.classification_tower,
             self.regression_tower,
             self.classification_head,
             self.box_regression_head,
-            self.centerness_head,
+            self.quality_head,
         ]
         for module in modules:
             for child in module.modules():
@@ -96,15 +96,15 @@ class DetectionHead(nn.Module):
                         nn.init.constant_(child.bias, 0.0)
 
         prior_bias = -math.log((1.0 - classification_prior) / classification_prior)
-        centerness_bias = -math.log((1.0 - centerness_prior) / centerness_prior)
+        quality_bias = -math.log((1.0 - quality_prior) / quality_prior)
         nn.init.constant_(self.classification_head.bias, prior_bias)
-        nn.init.constant_(self.centerness_head.bias, centerness_bias)
+        nn.init.constant_(self.quality_head.bias, quality_bias)
 
     def forward(self, features: Mapping[str, torch.Tensor]):
-        """Predict dense logits, centerness, and box deltas for each pyramid level."""
+        """Predict dense logits, quality logits, and box deltas for each pyramid level."""
         cls_logits = {}
         bbox_regression = {}
-        centerness = {}
+        quality_logits = {}
         refined_features = {}
 
         for level_name, feature in features.items():
@@ -113,13 +113,13 @@ class DetectionHead(nn.Module):
             refined_features[level_name] = reg_feature
             cls_logits[level_name] = self.classification_head(cls_feature)
             bbox_regression[level_name] = F.softplus(self.box_regression_head(reg_feature))
-            centerness[level_name] = self.centerness_head(reg_feature)
+            quality_logits[level_name] = self.quality_head(reg_feature)
 
         return {
             "features": refined_features,
             "cls_logits": cls_logits,
             "bbox_regression": bbox_regression,
-            "centerness": centerness,
+            "quality_logits": quality_logits,
         }
 
 

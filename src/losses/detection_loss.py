@@ -70,6 +70,35 @@ def generalized_box_iou_loss(
     return loss
 
 
+def aligned_box_iou(
+    pred_boxes: torch.Tensor,
+    target_boxes: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Compute IoU for aligned XYXY box pairs."""
+    if pred_boxes.shape != target_boxes.shape:
+        raise ValueError("aligned_box_iou expects pred_boxes and target_boxes to have the same shape.")
+    if pred_boxes.numel() == 0:
+        return pred_boxes.new_zeros((0,))
+
+    pred_x1, pred_y1, pred_x2, pred_y2 = pred_boxes.unbind(dim=-1)
+    target_x1, target_y1, target_x2, target_y2 = target_boxes.unbind(dim=-1)
+
+    inter_x1 = torch.maximum(pred_x1, target_x1)
+    inter_y1 = torch.maximum(pred_y1, target_y1)
+    inter_x2 = torch.minimum(pred_x2, target_x2)
+    inter_y2 = torch.minimum(pred_y2, target_y2)
+
+    inter_w = (inter_x2 - inter_x1).clamp(min=0.0)
+    inter_h = (inter_y2 - inter_y1).clamp(min=0.0)
+    intersection = inter_w * inter_h
+
+    pred_area = (pred_x2 - pred_x1).clamp(min=0.0) * (pred_y2 - pred_y1).clamp(min=0.0)
+    target_area = (target_x2 - target_x1).clamp(min=0.0) * (target_y2 - target_y1).clamp(min=0.0)
+    union = pred_area + target_area - intersection
+    return intersection / union.clamp(min=eps)
+
+
 def compute_detection_loss(loss_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """Reduce a torchvision-style loss dictionary into a stable scalar summary."""
     if not isinstance(loss_dict, dict):

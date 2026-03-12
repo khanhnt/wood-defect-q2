@@ -24,7 +24,7 @@ def test_hybrid_detector_variants_forward() -> None:
         assert outputs["variant_name"].startswith("cnn")
         assert set(outputs["cls_logits"]) == set(expected_levels)
         assert set(outputs["bbox_regression"]) == set(expected_levels)
-        assert set(outputs["centerness"]) == set(expected_levels)
+        assert set(outputs["quality_logits"]) == set(expected_levels)
 
 
 def test_hybrid_detector_train_and_eval_interfaces() -> None:
@@ -50,7 +50,7 @@ def test_hybrid_detector_train_and_eval_interfaces() -> None:
     ]
 
     loss_dict = model(train_images, targets)
-    assert set(loss_dict) == {"loss_cls", "loss_box_reg", "loss_centerness"}
+    assert set(loss_dict) == {"loss_cls", "loss_box_reg", "loss_quality"}
 
     model.eval()
     with torch.no_grad():
