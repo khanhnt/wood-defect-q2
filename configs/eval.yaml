@@ -26,6 +26,7 @@ evaluation:
   batch_size: 1
   num_workers: 0
   score_threshold: 0.05
+  compute_small_defect_eval: false
   tile_merge: false
   tile_merge_method: wbf
   tile_merge_iou_threshold: 0.5

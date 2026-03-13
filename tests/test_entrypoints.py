@@ -32,6 +32,7 @@ def test_evaluate_script_uses_shared_model_builder():
     assert "--backbone" in content
     assert "--small-defect-profile" in content
     assert "--max-samples" in content
+    assert "--small-defect-eval" in content
     assert "--in-domain-summary-path" in content
     assert "--score-threshold" in content
     assert "--tile-merge" in content

@@ -14,7 +14,7 @@ from src.datasets.label_mapping import (
     remap_predictions_and_targets_for_cross_dataset,
     resolve_cross_dataset_label_mapping,
 )
-from src.datasets.base_dataset import normalize_class_name
+from src.datasets.base_dataset import normalize_class_name, resolve_small_defect_rule
 from src.datasets.manifest_detection_dataset import build_detection_dataloader, load_manifest_records
 from src.metrics.detection_metrics import _to_numpy, box_iou_numpy, compute_detection_metrics
 from src.utils.io import ensure_dir, save_csv, save_json, save_jsonl
@@ -392,6 +392,138 @@ class Evaluator:
             payload["tile_origin_xy"] = prediction["tile_origin_xy"]
         return payload
 
+    def _annotation_is_small(
+        self,
+        annotation: Dict[str, Any],
+        record_width: int,
+        record_height: int,
+        small_defect_rule: Dict[str, Any],
+    ) -> bool:
+        if bool(annotation.get("is_small_defect", False)):
+            return True
+
+        checks: list[bool] = []
+        if small_defect_rule.get("min_area_ratio") is not None:
+            checks.append(float(annotation.get("bbox_area_norm", 0.0)) <= float(small_defect_rule["min_area_ratio"]))
+        if small_defect_rule.get("min_width_px") is not None and record_width > 0:
+            width_px = float(annotation.get("bbox_width_norm", 0.0)) * float(record_width)
+            checks.append(width_px <= float(small_defect_rule["min_width_px"]))
+        if small_defect_rule.get("min_height_px") is not None and record_height > 0:
+            height_px = float(annotation.get("bbox_height_norm", 0.0)) * float(record_height)
+            checks.append(height_px <= float(small_defect_rule["min_height_px"]))
+
+        if not small_defect_rule["enabled"] or not checks:
+            return False
+        if small_defect_rule["combine"] == "all":
+            return all(checks)
+        return any(checks)
+
+    def _build_small_defect_eval_payloads(
+        self,
+        dataset_config: Dict[str, Any],
+        predictions: Sequence[Dict[str, Any]],
+        target_class_names: Sequence[str],
+    ) -> Dict[str, Any] | None:
+        small_defect_cfg = dataset_config.get("small_defect")
+        if not small_defect_cfg:
+            return None
+
+        small_defect_rule = resolve_small_defect_rule(small_defect_cfg)
+        manifest_records, _ = load_manifest_records(
+            dataset_config_or_path=dataset_config,
+            split=None,
+        )
+        prediction_by_image = {prediction["image_id"]: prediction for prediction in predictions}
+        target_class_to_id = {
+            normalize_class_name(class_name): class_id
+            for class_id, class_name in enumerate(target_class_names)
+        }
+
+        small_target_targets: list[Dict[str, Any]] = []
+        small_target_predictions: list[Dict[str, Any]] = []
+        small_image_targets: list[Dict[str, Any]] = []
+        small_image_predictions: list[Dict[str, Any]] = []
+
+        for record in manifest_records:
+            image_id = record["image_id"]
+            prediction = prediction_by_image.get(image_id)
+            if prediction is None:
+                continue
+
+            record_width = int(record.get("width", 0) or 0)
+            record_height = int(record.get("height", 0) or 0)
+            all_boxes = []
+            all_labels = []
+            small_boxes = []
+            small_labels = []
+
+            for annotation in record.get("annotations", []):
+                normalized_class_name = normalize_class_name(annotation["class_name"])
+                if normalized_class_name not in target_class_to_id:
+                    continue
+                x1, y1, x2, y2 = annotation["bbox_xyxy_norm"]
+                box = [
+                    float(x1) * record_width,
+                    float(y1) * record_height,
+                    float(x2) * record_width,
+                    float(y2) * record_height,
+                ]
+                class_id = int(target_class_to_id[normalized_class_name])
+                all_boxes.append(box)
+                all_labels.append(class_id)
+
+                if self._annotation_is_small(
+                    annotation=annotation,
+                    record_width=record_width,
+                    record_height=record_height,
+                    small_defect_rule=small_defect_rule,
+                ):
+                    small_boxes.append(box)
+                    small_labels.append(class_id)
+
+            if not all_boxes:
+                continue
+
+            if small_boxes:
+                small_target_targets.append(
+                    {
+                        "image_id": image_id,
+                        "boxes": torch.as_tensor(small_boxes, dtype=torch.float32).reshape(-1, 4),
+                        "labels": torch.as_tensor(small_labels, dtype=torch.int64),
+                    }
+                )
+                small_target_predictions.append(prediction)
+
+                small_image_targets.append(
+                    {
+                        "image_id": image_id,
+                        "boxes": torch.as_tensor(all_boxes, dtype=torch.float32).reshape(-1, 4),
+                        "labels": torch.as_tensor(all_labels, dtype=torch.int64),
+                    }
+                )
+                small_image_predictions.append(prediction)
+
+        if not small_target_targets:
+            return None
+
+        small_target_metrics = compute_detection_metrics(
+            predictions=small_target_predictions,
+            targets=small_target_targets,
+            class_names=target_class_names,
+            score_threshold=float(self.config.get("evaluation", {}).get("score_threshold", 0.05)),
+        )
+        small_image_metrics = compute_detection_metrics(
+            predictions=small_image_predictions,
+            targets=small_image_targets,
+            class_names=target_class_names,
+            score_threshold=float(self.config.get("evaluation", {}).get("score_threshold", 0.05)),
+        )
+        return {
+            "rule": small_defect_rule,
+            "small_target": small_target_metrics,
+            "small_image": small_image_metrics,
+        }
+
     def _load_summary_json(self, path: str | Path | None) -> Dict[str, Any] | None:
         if not path:
             return None
@@ -576,6 +708,7 @@ class Evaluator:
         mapping_report = None
         cross_dataset_summary = None
         source_manifest_path = None
+        small_defect_eval_payload = None
 
         if tile_merge_enabled:
             if bool(eval_cfg.get("compute_cross_dataset", False)):
@@ -621,6 +754,12 @@ class Evaluator:
                 source_class_names=source_class_names,
                 target_class_names=target_class_names,
             )
+        elif bool(eval_cfg.get("compute_small_defect_eval", False)) and not tile_merge_enabled:
+            small_defect_eval_payload = self._build_small_defect_eval_payloads(
+                dataset_config=dataset_config,
+                predictions=predictions,
+                target_class_names=target_class_names,
+            )
 
         metric_payload = compute_detection_metrics(
             predictions=metric_predictions,
@@ -655,12 +794,32 @@ class Evaluator:
             summary["num_merged_images"] = len(metric_targets)
         if cross_dataset_summary is not None:
             summary.update(cross_dataset_summary)
+        if small_defect_eval_payload is not None:
+            summary["small_defect_rule"] = small_defect_eval_payload["rule"]
+            summary["small_target_mAP50"] = small_defect_eval_payload["small_target"]["summary"]["mAP50"]
+            summary["small_target_mAP50_95"] = small_defect_eval_payload["small_target"]["summary"]["mAP50_95"]
+            summary["small_target_num_images"] = small_defect_eval_payload["small_target"]["summary"]["num_images"]
+            summary["small_target_num_targets"] = small_defect_eval_payload["small_target"]["summary"]["num_targets"]
+            summary["small_image_subset_mAP50"] = small_defect_eval_payload["small_image"]["summary"]["mAP50"]
+            summary["small_image_subset_mAP50_95"] = small_defect_eval_payload["small_image"]["summary"]["mAP50_95"]
+            summary["small_image_subset_num_images"] = small_defect_eval_payload["small_image"]["summary"]["num_images"]
+            summary["small_image_subset_num_targets"] = small_defect_eval_payload["small_image"]["summary"]["num_targets"]
 
         if save_outputs:
             summary_path = self.tables_dir / f"{experiment_name}_{resolved_split}_summary.json"
             per_class_path = self.tables_dir / f"{experiment_name}_{resolved_split}_per_class.csv"
             save_json(summary, summary_path)
             save_csv(metric_payload["per_class"], per_class_path)
+
+            if small_defect_eval_payload is not None:
+                small_target_summary_path = self.tables_dir / f"{experiment_name}_{resolved_split}_small_target_summary.json"
+                small_target_per_class_path = self.tables_dir / f"{experiment_name}_{resolved_split}_small_target_per_class.csv"
+                small_image_summary_path = self.tables_dir / f"{experiment_name}_{resolved_split}_small_image_subset_summary.json"
+                small_image_per_class_path = self.tables_dir / f"{experiment_name}_{resolved_split}_small_image_subset_per_class.csv"
+                save_json(small_defect_eval_payload["small_target"]["summary"], small_target_summary_path)
+                save_csv(small_defect_eval_payload["small_target"]["per_class"], small_target_per_class_path)
+                save_json(small_defect_eval_payload["small_image"]["summary"], small_image_summary_path)
+                save_csv(small_defect_eval_payload["small_image"]["per_class"], small_image_per_class_path)
 
             if self.config.get("evaluation", {}).get("save_predictions", False):
                 predictions_path = self.tables_dir / f"{experiment_name}_{resolved_split}_predictions.jsonl"

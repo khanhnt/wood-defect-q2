@@ -54,6 +54,11 @@ def parse_args():
     parser.add_argument("--max-samples", type=int, default=None, help="Optional eval subset size override")
     parser.add_argument("--score-threshold", type=float, default=None, help="Optional eval score threshold override")
     parser.add_argument(
+        "--small-defect-eval",
+        action="store_true",
+        help="Export additional metrics on small-target and small-image subsets.",
+    )
+    parser.add_argument(
         "--tile-merge",
         action="store_true",
         help="Enable tile-aware prediction merge before scoring.",
@@ -138,6 +143,8 @@ def _apply_eval_overrides(config: Dict[str, Any], args: argparse.Namespace) -> D
     if args.score_threshold is not None:
         eval_cfg["score_threshold"] = float(args.score_threshold)
         model_cfg["score_threshold"] = float(args.score_threshold)
+    if args.small_defect_eval:
+        eval_cfg["compute_small_defect_eval"] = True
     if args.tile_merge:
         eval_cfg["tile_merge"] = True
     if args.tile_merge_iou_threshold is not None:
@@ -160,12 +167,16 @@ def _apply_eval_overrides(config: Dict[str, Any], args: argparse.Namespace) -> D
                 parts.append(args.backbone)
             if args.small_defect_profile not in {None, "none"}:
                 parts.append(args.small_defect_profile)
+            if args.small_defect_eval:
+                parts.append("smalldefect")
             if args.tile_merge:
                 parts.append("tilemerge")
             parts.append("eval")
             config["experiment_name"] = "_".join(parts)
         elif args.tile_merge:
             config["experiment_name"] = "baseline_tilemerge_eval"
+        elif args.small_defect_eval:
+            config["experiment_name"] = "baseline_smalldefect_eval"
 
     config["model"] = model_cfg
     config["evaluation"] = eval_cfg
