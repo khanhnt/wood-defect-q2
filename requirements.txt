@@ -11,6 +11,7 @@ albumentations
 torch
 torchvision
 torchaudio
+timm
 pytest
 thop
 jupyter
