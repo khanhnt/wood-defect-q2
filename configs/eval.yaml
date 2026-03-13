@@ -27,7 +27,13 @@ evaluation:
   num_workers: 0
   score_threshold: 0.05
   tile_merge: false
+  tile_merge_method: wbf
   tile_merge_iou_threshold: 0.5
+  tile_pre_merge_score_threshold: 0.10
+  tile_post_merge_score_threshold: 0.05
+  tile_edge_margin_px: 32
+  tile_edge_penalty: 0.6
+  tile_max_detections: 100
   save_predictions: false
   save_visualizations: false
   compute_per_class_ap: true

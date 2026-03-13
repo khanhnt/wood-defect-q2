@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Sequence
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -108,10 +109,84 @@ class Evaluator:
 
         return keep
 
+    def _edge_score_weights(
+        self,
+        boxes: torch.Tensor,
+        tile_width: int,
+        tile_height: int,
+        margin_px: float,
+        edge_penalty: float,
+    ) -> torch.Tensor:
+        if boxes.numel() == 0 or margin_px <= 0:
+            return torch.ones((len(boxes),), dtype=torch.float32)
+
+        centers_x = (boxes[:, 0] + boxes[:, 2]) * 0.5
+        centers_y = (boxes[:, 1] + boxes[:, 3]) * 0.5
+        tile_width_f = float(tile_width)
+        tile_height_f = float(tile_height)
+        distances = torch.stack(
+            [
+                centers_x,
+                centers_y,
+                tile_width_f - centers_x,
+                tile_height_f - centers_y,
+            ],
+            dim=1,
+        ).min(dim=1).values
+        normalized = torch.clamp(distances / float(margin_px), min=0.0, max=1.0)
+        base_penalty = float(edge_penalty)
+        return base_penalty + (1.0 - base_penalty) * normalized
+
+    def _weighted_box_fusion_numpy(
+        self,
+        boxes: Any,
+        scores: Any,
+        iou_threshold: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        boxes_array = _to_numpy(boxes).astype("float32")
+        scores_array = _to_numpy(scores).astype("float32")
+        if boxes_array.size == 0:
+            return (
+                np.zeros((0, 4), dtype=np.float32),
+                np.zeros((0,), dtype=np.float32),
+            )
+
+        order = scores_array.argsort()[::-1]
+        fused_boxes: list[np.ndarray] = []
+        fused_scores: list[float] = []
+
+        while order.size > 0:
+            anchor = int(order[0])
+            if order.size == 1:
+                cluster_indices = np.asarray([anchor], dtype=np.int64)
+                order = np.zeros((0,), dtype=np.int64)
+            else:
+                remaining = order[1:]
+                ious = box_iou_numpy(boxes_array[anchor : anchor + 1], boxes_array[remaining])[0]
+                matched = remaining[ious >= float(iou_threshold)]
+                cluster_indices = np.concatenate(
+                    [np.asarray([anchor], dtype=np.int64), matched.astype(np.int64)]
+                )
+                order = remaining[ious < float(iou_threshold)]
+
+            cluster_boxes = boxes_array[cluster_indices]
+            cluster_scores = np.clip(scores_array[cluster_indices], a_min=1e-6, a_max=None)
+            weighted_box = (cluster_boxes * cluster_scores[:, None]).sum(axis=0) / cluster_scores.sum()
+            fused_boxes.append(weighted_box.astype(np.float32))
+            fused_scores.append(float(cluster_scores.max()))
+
+        return np.stack(fused_boxes, axis=0), np.asarray(fused_scores, dtype=np.float32)
+
     def _merge_tile_predictions(
         self,
         predictions: Sequence[Dict[str, Any]],
         merge_iou_threshold: float,
+        merge_method: str,
+        pre_merge_score_threshold: float,
+        post_merge_score_threshold: float,
+        edge_margin_px: float,
+        edge_penalty: float,
+        max_detections: int,
     ) -> list[Dict[str, Any]]:
         grouped_predictions: Dict[str, Dict[str, list[Any]]] = {}
 
@@ -127,6 +202,26 @@ class Evaluator:
             )
 
             boxes = prediction["boxes"].clone().cpu()
+            scores = prediction["scores"].clone().cpu()
+            labels = prediction["labels"].clone().cpu()
+            tile_width = int(prediction.get("tile_width", 0) or 0)
+            tile_height = int(prediction.get("tile_height", 0) or 0)
+
+            if boxes.numel() > 0 and tile_width > 0 and tile_height > 0:
+                edge_weights = self._edge_score_weights(
+                    boxes=boxes,
+                    tile_width=tile_width,
+                    tile_height=tile_height,
+                    margin_px=edge_margin_px,
+                    edge_penalty=edge_penalty,
+                )
+                scores = scores * edge_weights
+
+            keep_mask = scores >= float(pre_merge_score_threshold)
+            boxes = boxes[keep_mask]
+            scores = scores[keep_mask]
+            labels = labels[keep_mask]
+
             if boxes.numel() > 0:
                 boxes[:, 0] += offset_x
                 boxes[:, 2] += offset_x
@@ -134,8 +229,8 @@ class Evaluator:
                 boxes[:, 3] += offset_y
 
             grouped_predictions[source_image_id]["boxes"].append(boxes)
-            grouped_predictions[source_image_id]["scores"].append(prediction["scores"].clone().cpu())
-            grouped_predictions[source_image_id]["labels"].append(prediction["labels"].clone().cpu())
+            grouped_predictions[source_image_id]["scores"].append(scores)
+            grouped_predictions[source_image_id]["labels"].append(labels)
 
         merged_predictions: list[Dict[str, Any]] = []
         for source_image_id, grouped in grouped_predictions.items():
@@ -143,28 +238,60 @@ class Evaluator:
             scores = torch.cat(grouped["scores"], dim=0) if grouped["scores"] else torch.zeros((0,), dtype=torch.float32)
             labels = torch.cat(grouped["labels"], dim=0) if grouped["labels"] else torch.zeros((0,), dtype=torch.int64)
 
-            kept_indices: list[int] = []
+            merged_boxes_per_class: list[torch.Tensor] = []
+            merged_scores_per_class: list[torch.Tensor] = []
+            merged_labels_per_class: list[torch.Tensor] = []
+
             for class_id in labels.unique(sorted=True).tolist():
                 class_mask = labels == int(class_id)
-                class_indices = class_mask.nonzero(as_tuple=False).squeeze(1).cpu().numpy()
-                if class_indices.size == 0:
+                class_boxes = boxes[class_mask]
+                class_scores = scores[class_mask]
+                if class_boxes.numel() == 0:
                     continue
-                class_keep_local = self._nms_numpy(
-                    boxes[class_indices],
-                    scores[class_indices],
-                    iou_threshold=merge_iou_threshold,
-                )
-                kept_indices.extend(class_indices[index] for index in class_keep_local)
 
-            if kept_indices:
-                keep_tensor = torch.as_tensor(
-                    kept_indices,
-                    dtype=torch.long,
+                if merge_method == "wbf":
+                    fused_boxes, fused_scores = self._weighted_box_fusion_numpy(
+                        boxes=class_boxes,
+                        scores=class_scores,
+                        iou_threshold=merge_iou_threshold,
+                    )
+                    class_boxes = torch.as_tensor(fused_boxes, dtype=torch.float32)
+                    class_scores = torch.as_tensor(fused_scores, dtype=torch.float32)
+                else:
+                    class_keep = self._nms_numpy(
+                        class_boxes,
+                        class_scores,
+                        iou_threshold=merge_iou_threshold,
+                    )
+                    keep_tensor = torch.as_tensor(class_keep, dtype=torch.long)
+                    class_boxes = class_boxes[keep_tensor]
+                    class_scores = class_scores[keep_tensor]
+
+                score_mask = class_scores >= float(post_merge_score_threshold)
+                class_boxes = class_boxes[score_mask]
+                class_scores = class_scores[score_mask]
+                if class_boxes.numel() == 0:
+                    continue
+
+                class_labels = torch.full(
+                    (class_boxes.shape[0],),
+                    int(class_id),
+                    dtype=torch.int64,
                 )
-                keep_tensor = keep_tensor[scores[keep_tensor].argsort(descending=True)]
-                boxes = boxes[keep_tensor]
-                scores = scores[keep_tensor]
-                labels = labels[keep_tensor]
+                merged_boxes_per_class.append(class_boxes)
+                merged_scores_per_class.append(class_scores)
+                merged_labels_per_class.append(class_labels)
+
+            if merged_boxes_per_class:
+                boxes = torch.cat(merged_boxes_per_class, dim=0)
+                scores = torch.cat(merged_scores_per_class, dim=0)
+                labels = torch.cat(merged_labels_per_class, dim=0)
+                order = scores.argsort(descending=True)
+                if max_detections > 0:
+                    order = order[: int(max_detections)]
+                boxes = boxes[order]
+                scores = scores[order]
+                labels = labels[order]
             else:
                 boxes = torch.zeros((0, 4), dtype=torch.float32)
                 scores = torch.zeros((0,), dtype=torch.float32)
@@ -399,6 +526,14 @@ class Evaluator:
         eval_cfg = self.config.get("evaluation", {})
         tile_merge_enabled = bool(eval_cfg.get("tile_merge", False))
         tile_merge_iou_threshold = float(eval_cfg.get("tile_merge_iou_threshold", 0.5))
+        tile_merge_method = str(eval_cfg.get("tile_merge_method", "wbf")).lower()
+        if tile_merge_method not in {"nms", "wbf"}:
+            raise ValueError("evaluation.tile_merge_method must be either 'nms' or 'wbf'.")
+        tile_pre_merge_score_threshold = float(eval_cfg.get("tile_pre_merge_score_threshold", score_threshold))
+        tile_post_merge_score_threshold = float(eval_cfg.get("tile_post_merge_score_threshold", score_threshold))
+        tile_edge_margin_px = float(eval_cfg.get("tile_edge_margin_px", 32.0))
+        tile_edge_penalty = float(eval_cfg.get("tile_edge_penalty", 0.6))
+        tile_max_detections = int(eval_cfg.get("tile_max_detections", self.config.get("model", {}).get("max_detections", 100)))
 
         self.model.to(self.device)
         self.model.eval()
@@ -420,6 +555,8 @@ class Evaluator:
                             "scores": output["scores"].detach().cpu(),
                             "source_image_id": meta.get("source_image_id"),
                             "tile_origin_xy": meta.get("tile_origin_xy"),
+                            "tile_width": meta.get("record_width"),
+                            "tile_height": meta.get("record_height"),
                         }
                     )
                     targets.append(
@@ -451,6 +588,12 @@ class Evaluator:
             metric_predictions = self._merge_tile_predictions(
                 predictions=predictions,
                 merge_iou_threshold=tile_merge_iou_threshold,
+                merge_method=tile_merge_method,
+                pre_merge_score_threshold=tile_pre_merge_score_threshold,
+                post_merge_score_threshold=tile_post_merge_score_threshold,
+                edge_margin_px=tile_edge_margin_px,
+                edge_penalty=tile_edge_penalty,
+                max_detections=tile_max_detections,
             )
             metric_targets, metric_class_names, source_manifest_path = self._load_source_level_targets(
                 dataset_config=dataset_config,
@@ -500,7 +643,13 @@ class Evaluator:
         )
         if tile_merge_enabled:
             summary["evaluation_mode"] = "tile_merge_in_domain"
+            summary["tile_merge_method"] = tile_merge_method
             summary["tile_merge_iou_threshold"] = tile_merge_iou_threshold
+            summary["tile_pre_merge_score_threshold"] = tile_pre_merge_score_threshold
+            summary["tile_post_merge_score_threshold"] = tile_post_merge_score_threshold
+            summary["tile_edge_margin_px"] = tile_edge_margin_px
+            summary["tile_edge_penalty"] = tile_edge_penalty
+            summary["tile_max_detections"] = tile_max_detections
             summary["source_manifest_path"] = source_manifest_path
             summary["num_tile_images"] = len(predictions)
             summary["num_merged_images"] = len(metric_targets)
