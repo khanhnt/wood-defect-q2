@@ -21,6 +21,7 @@ def test_train_script_uses_shared_model_builder():
     assert "--positive-weight" in content
     assert "--negative-weight" in content
     assert "--epochs" in content
+    assert "--image-size" in content
     assert "--max-train-samples" in content
     assert "--max-val-samples" in content
     assert "_apply_train_overrides" in content
@@ -36,6 +37,7 @@ def test_evaluate_script_uses_shared_model_builder():
     assert "maxvit_t" in content
     assert "--small-defect-profile" in content
     assert "--max-samples" in content
+    assert "--image-size" in content
     assert "--small-defect-eval" in content
     assert "--in-domain-summary-path" in content
     assert "--score-threshold" in content

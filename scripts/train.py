@@ -36,6 +36,7 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=None, help="Optional training epoch override")
     parser.add_argument("--batch-size", type=int, default=None, help="Optional training batch size override")
     parser.add_argument("--num-workers", type=int, default=None, help="Optional dataloader worker override")
+    parser.add_argument("--image-size", type=int, default=None, help="Optional image size override")
     parser.add_argument("--learning-rate", type=float, default=None, help="Optional learning rate override")
     parser.add_argument("--max-train-samples", type=int, default=None, help="Optional train subset size override")
     parser.add_argument("--max-val-samples", type=int, default=None, help="Optional val subset size override")
@@ -147,6 +148,8 @@ def _apply_train_overrides(config: Dict[str, Any], args: argparse.Namespace) -> 
         train_cfg["batch_size"] = int(args.batch_size)
     if args.num_workers is not None:
         train_cfg["num_workers"] = int(args.num_workers)
+    if args.image_size is not None:
+        train_cfg["image_size"] = int(args.image_size)
     if args.learning_rate is not None:
         train_cfg["learning_rate"] = float(args.learning_rate)
     if args.max_train_samples is not None:
@@ -160,6 +163,8 @@ def _apply_train_overrides(config: Dict[str, Any], args: argparse.Namespace) -> 
         model_cfg["pre_nms_topk"] = int(args.pre_nms_topk)
     if args.max_detections is not None:
         model_cfg["max_detections"] = int(args.max_detections)
+    if args.image_size is not None:
+        model_cfg["image_size"] = int(args.image_size)
     if args.backbone is not None:
         model_cfg["backbone"] = args.backbone
     if args.small_defect_profile is not None:

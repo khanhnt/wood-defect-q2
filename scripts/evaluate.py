@@ -61,6 +61,7 @@ def parse_args():
     parser.add_argument("--device", type=str, default=None, help="Optional device override")
     parser.add_argument("--batch-size", type=int, default=None, help="Optional eval batch size override")
     parser.add_argument("--num-workers", type=int, default=None, help="Optional eval num_workers override")
+    parser.add_argument("--image-size", type=int, default=None, help="Optional image size override")
     parser.add_argument("--max-samples", type=int, default=None, help="Optional eval subset size override")
     parser.add_argument("--score-threshold", type=float, default=None, help="Optional eval score threshold override")
     parser.add_argument(
@@ -148,6 +149,8 @@ def _apply_eval_overrides(config: Dict[str, Any], args: argparse.Namespace) -> D
         eval_cfg["batch_size"] = int(args.batch_size)
     if args.num_workers is not None:
         eval_cfg["num_workers"] = int(args.num_workers)
+    if args.image_size is not None:
+        model_cfg["image_size"] = int(args.image_size)
     if args.max_samples is not None:
         eval_cfg["max_samples"] = int(args.max_samples)
     if args.score_threshold is not None:
