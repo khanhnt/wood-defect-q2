@@ -9,7 +9,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.models.backbones.timm_fpn import build_timm_fpn_backbone
 from src.models.backbones.torchvision_fpn import build_torchvision_fpn_backbone
 
 
@@ -197,21 +196,11 @@ def build_baseline_detector(model_config: Dict[str, Any], train_config: Dict[str
                 pretrained_backbone=False,
                 **detector_kwargs,
             )
-    elif backbone_name in {"densenet", "densenet121"}:
+    elif backbone_name in {"densenet", "densenet121", "maxvit", "maxvit_t"}:
         backbone = build_torchvision_fpn_backbone(
             backbone_name=backbone_name,
             out_channels=int(model_config.get("fpn_out_channels", 256)),
-        )
-        detector = FasterRCNN(
-            backbone=backbone,
-            num_classes=num_classes + 1,
-            min_size=image_size,
-            max_size=image_size,
-        )
-    elif backbone_name in {"maxvit", "maxvit_t"}:
-        backbone = build_timm_fpn_backbone(
-            backbone_name=backbone_name,
-            out_channels=int(model_config.get("fpn_out_channels", 256)),
+            input_size=(image_size, image_size),
         )
         detector = FasterRCNN(
             backbone=backbone,

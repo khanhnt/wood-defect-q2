@@ -22,5 +22,4 @@ dependencies:
   - torchaudio
   - pip:
       - albumentations
-      - timm
       - thop

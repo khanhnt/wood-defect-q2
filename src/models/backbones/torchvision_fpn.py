@@ -79,16 +79,20 @@ def _build_densenet121(weights_none_kwargs: dict[str, object]) -> nn.Module:
         return densenet121(pretrained=False)
 
 
-def _build_maxvit_t(weights_none_kwargs: dict[str, object]) -> nn.Module:
+def _build_maxvit_t(weights_none_kwargs: dict[str, object], input_size: tuple[int, int]) -> nn.Module:
     from torchvision.models import maxvit_t
 
     try:
-        return maxvit_t(**weights_none_kwargs)
+        return maxvit_t(input_size=input_size, **weights_none_kwargs)
     except TypeError:  # pragma: no cover - torchvision version dependent
-        return maxvit_t(pretrained=False)
+        return maxvit_t(pretrained=False, input_size=input_size)
 
 
-def build_torchvision_fpn_backbone(backbone_name: str, out_channels: int = 256) -> nn.Module:
+def build_torchvision_fpn_backbone(
+    backbone_name: str,
+    out_channels: int = 256,
+    input_size: tuple[int, int] | None = None,
+) -> nn.Module:
     """Create a classification backbone adapted for Faster R-CNN via FPN."""
 
     normalized_name = str(backbone_name).lower()
@@ -109,7 +113,8 @@ def build_torchvision_fpn_backbone(backbone_name: str, out_channels: int = 256) 
         )
 
     if normalized_name in {"maxvit", "maxvit_t"}:
-        model = _build_maxvit_t(weights_none_kwargs=weights_none_kwargs)
+        resolved_input_size = input_size or (224, 224)
+        model = _build_maxvit_t(weights_none_kwargs=weights_none_kwargs, input_size=resolved_input_size)
         return MaxVitBackboneWithFPN(body=model, out_channels=out_channels)
 
     raise NotImplementedError(f"Unsupported torchvision FPN backbone: {backbone_name!r}")
