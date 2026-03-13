@@ -12,7 +12,7 @@ import torch
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
-from src.datasets.base_dataset import normalize_class_name
+from src.datasets.base_dataset import normalize_class_name, resolve_small_defect_rule
 from src.utils.config import expand_path, load_yaml
 
 
@@ -184,6 +184,7 @@ def _pil_to_tensor(image: Image.Image) -> torch.Tensor:
 def build_small_defect_sampler(
     records: Sequence[Dict[str, Any]],
     sampler_config: Dict[str, Any] | None,
+    small_defect_config: Dict[str, Any] | None = None,
     seed: int = 42,
 ) -> tuple[WeightedRandomSampler | None, Dict[str, Any] | None]:
     """Build a simple weighted sampler that favors tiles containing small defects."""
@@ -200,9 +201,52 @@ def build_small_defect_sampler(
         "positive_records": 0,
         "negative_records": 0,
     }
+    small_defect_rule = resolve_small_defect_rule(small_defect_config)
+
+    def infer_small_annotations(record: Dict[str, Any]) -> int:
+        explicit_count = record.get("num_small_annotations")
+        if explicit_count is not None and int(explicit_count) > 0:
+            return int(explicit_count)
+
+        annotations = record.get("annotations", [])
+        if not annotations:
+            return 0
+
+        record_width = float(record.get("width", 0) or 0)
+        record_height = float(record.get("height", 0) or 0)
+        inferred_count = 0
+
+        for annotation in annotations:
+            if bool(annotation.get("is_small_defect", False)):
+                inferred_count += 1
+                continue
+
+            checks = []
+            if small_defect_rule.get("min_area_ratio") is not None:
+                checks.append(float(annotation.get("bbox_area_norm", 0.0)) <= float(small_defect_rule["min_area_ratio"]))
+
+            if small_defect_rule.get("min_width_px") is not None and record_width > 0:
+                width_px = float(annotation.get("bbox_width_norm", 0.0)) * record_width
+                checks.append(width_px <= float(small_defect_rule["min_width_px"]))
+
+            if small_defect_rule.get("min_height_px") is not None and record_height > 0:
+                height_px = float(annotation.get("bbox_height_norm", 0.0)) * record_height
+                checks.append(height_px <= float(small_defect_rule["min_height_px"]))
+
+            if not small_defect_rule["enabled"] or not checks:
+                is_small = False
+            elif small_defect_rule["combine"] == "all":
+                is_small = all(checks)
+            else:
+                is_small = any(checks)
+
+            if is_small:
+                inferred_count += 1
+
+        return inferred_count
 
     for record in records:
-        num_small_annotations = int(record.get("num_small_annotations", 0) or 0)
+        num_small_annotations = infer_small_annotations(record)
         num_annotations = len(record.get("annotations", []))
         if num_small_annotations > 0:
             weights.append(small_weight)
@@ -227,6 +271,7 @@ def build_small_defect_sampler(
         "small_weight": small_weight,
         "positive_weight": positive_weight,
         "negative_weight": negative_weight,
+        "small_defect_rule": small_defect_rule,
         **bucket_counts,
     }
     return sampler, summary
@@ -326,6 +371,7 @@ def build_detection_dataloader(
     sampler, sampler_summary = build_small_defect_sampler(
         records=records,
         sampler_config=sampler_config,
+        small_defect_config=metadata["dataset_config"].get("small_defect"),
         seed=split_seed,
     )
     loader = DataLoader(
