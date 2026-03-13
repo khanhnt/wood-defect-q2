@@ -38,6 +38,38 @@ class TorchvisionBackboneWithFPN(nn.Module):
         return self.fpn(ordered_features)
 
 
+class MaxVitBackboneWithFPN(nn.Module):
+    """Wrap MaxViT with explicit stage outputs to avoid FX extraction shape issues."""
+
+    def __init__(self, body: nn.Module, out_channels: int = 256) -> None:
+        super().__init__()
+        from torchvision.ops import FeaturePyramidNetwork
+        from torchvision.ops.feature_pyramid_network import LastLevelMaxPool
+
+        self.body = body
+        self.required_divisor = 28
+        self.fpn = FeaturePyramidNetwork(
+            in_channels_list=[64, 128, 256, 512],
+            out_channels=int(out_channels),
+            extra_blocks=LastLevelMaxPool(),
+        )
+        self.out_channels = int(out_channels)
+
+    def forward(self, x):
+        if x.shape[-2] % self.required_divisor != 0 or x.shape[-1] % self.required_divisor != 0:
+            raise ValueError(
+                f"MaxViT backbone requires image sizes divisible by {self.required_divisor}; "
+                f"received {tuple(x.shape[-2:])}."
+            )
+
+        x = self.body.stem(x)
+        features = OrderedDict()
+        for stage_index, stage in enumerate(self.body.blocks):
+            x = stage(x)
+            features[str(stage_index)] = x
+        return self.fpn(features)
+
+
 def _build_densenet121(weights_none_kwargs: dict[str, object]) -> nn.Module:
     from torchvision.models import densenet121
 
@@ -78,16 +110,6 @@ def build_torchvision_fpn_backbone(backbone_name: str, out_channels: int = 256) 
 
     if normalized_name in {"maxvit", "maxvit_t"}:
         model = _build_maxvit_t(weights_none_kwargs=weights_none_kwargs)
-        return TorchvisionBackboneWithFPN(
-            body=model,
-            return_nodes={
-                "blocks.0": "0",
-                "blocks.1": "1",
-                "blocks.2": "2",
-                "blocks.3": "3",
-            },
-            in_channels_list=[64, 128, 256, 512],
-            out_channels=out_channels,
-        )
+        return MaxVitBackboneWithFPN(body=model, out_channels=out_channels)
 
     raise NotImplementedError(f"Unsupported torchvision FPN backbone: {backbone_name!r}")
