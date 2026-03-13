@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, Sequence
 import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from src.datasets.base_dataset import normalize_class_name
 from src.utils.config import expand_path, load_yaml
@@ -181,6 +181,57 @@ def _pil_to_tensor(image: Image.Image) -> torch.Tensor:
     return torch.from_numpy(array).permute(2, 0, 1).contiguous()
 
 
+def build_small_defect_sampler(
+    records: Sequence[Dict[str, Any]],
+    sampler_config: Dict[str, Any] | None,
+    seed: int = 42,
+) -> tuple[WeightedRandomSampler | None, Dict[str, Any] | None]:
+    """Build a simple weighted sampler that favors tiles containing small defects."""
+    if not sampler_config or not bool(sampler_config.get("enabled", False)):
+        return None, None
+
+    small_weight = float(sampler_config.get("small_weight", 3.0))
+    positive_weight = float(sampler_config.get("positive_weight", 1.5))
+    negative_weight = float(sampler_config.get("negative_weight", 0.5))
+
+    weights: list[float] = []
+    bucket_counts = {
+        "small_defect_records": 0,
+        "positive_records": 0,
+        "negative_records": 0,
+    }
+
+    for record in records:
+        num_small_annotations = int(record.get("num_small_annotations", 0) or 0)
+        num_annotations = len(record.get("annotations", []))
+        if num_small_annotations > 0:
+            weights.append(small_weight)
+            bucket_counts["small_defect_records"] += 1
+        elif num_annotations > 0:
+            weights.append(positive_weight)
+            bucket_counts["positive_records"] += 1
+        else:
+            weights.append(negative_weight)
+            bucket_counts["negative_records"] += 1
+
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    sampler = WeightedRandomSampler(
+        weights=torch.as_tensor(weights, dtype=torch.double),
+        num_samples=len(weights),
+        replacement=True,
+        generator=generator,
+    )
+    summary = {
+        "enabled": True,
+        "small_weight": small_weight,
+        "positive_weight": positive_weight,
+        "negative_weight": negative_weight,
+        **bucket_counts,
+    }
+    return sampler, summary
+
+
 class ManifestDetectionDataset(Dataset):
     """A minimal PyTorch detection dataset backed by prepared JSONL manifests."""
 
@@ -260,6 +311,7 @@ def build_detection_dataloader(
     train_ratio: float = 0.8,
     val_ratio: float = 0.2,
     max_samples: int | None = None,
+    sampler_config: Dict[str, Any] | None = None,
 ) -> tuple[DataLoader, Dict[str, Any]]:
     """Build a minimal detection dataloader from a manifest-backed dataset."""
     records, metadata = load_manifest_records(
@@ -271,12 +323,20 @@ def build_detection_dataloader(
         max_samples=max_samples,
     )
     dataset = ManifestDetectionDataset(records, image_root_dir=metadata["image_root_dir"])
+    sampler, sampler_summary = build_small_defect_sampler(
+        records=records,
+        sampler_config=sampler_config,
+        seed=split_seed,
+    )
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=bool(shuffle and sampler is None),
         num_workers=num_workers,
         collate_fn=collate_detection_batch,
+        sampler=sampler,
     )
     metadata["num_images"] = len(dataset)
+    if sampler_summary is not None:
+        metadata["sampler"] = sampler_summary
     return loader, metadata

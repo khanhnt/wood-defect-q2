@@ -56,6 +56,29 @@ def parse_args():
         default=None,
         help="Optional baseline small-defect profile override",
     )
+    parser.add_argument(
+        "--small-defect-sampler",
+        action="store_true",
+        help="Enable a weighted sampler that favors tiles containing small defects.",
+    )
+    parser.add_argument(
+        "--small-weight",
+        type=float,
+        default=None,
+        help="Optional sampler weight for records containing small defects.",
+    )
+    parser.add_argument(
+        "--positive-weight",
+        type=float,
+        default=None,
+        help="Optional sampler weight for positive records without small defects.",
+    )
+    parser.add_argument(
+        "--negative-weight",
+        type=float,
+        default=None,
+        help="Optional sampler weight for negative records.",
+    )
     return parser.parse_args()
 
 
@@ -94,6 +117,10 @@ def _apply_train_overrides(config: Dict[str, Any], args: argparse.Namespace) -> 
     config = dict(config)
     train_cfg = dict(config.get("train", {}))
     model_cfg = dict(config.get("model", {}))
+    sampler_override_requested = bool(
+        args.small_defect_sampler
+        or any(value is not None for value in (args.small_weight, args.positive_weight, args.negative_weight))
+    )
 
     model_cfg = _apply_variant_override(model_cfg=model_cfg, variant=args.variant)
 
@@ -127,16 +154,32 @@ def _apply_train_overrides(config: Dict[str, Any], args: argparse.Namespace) -> 
         model_cfg["backbone"] = args.backbone
     if args.small_defect_profile is not None:
         model_cfg["small_defect_profile"] = args.small_defect_profile
+    if sampler_override_requested:
+        sampler_cfg = dict(train_cfg.get("small_defect_sampler", {}))
+        sampler_cfg["enabled"] = True
+        if args.small_weight is not None:
+            sampler_cfg["small_weight"] = float(args.small_weight)
+        if args.positive_weight is not None:
+            sampler_cfg["positive_weight"] = float(args.positive_weight)
+        if args.negative_weight is not None:
+            sampler_cfg["negative_weight"] = float(args.negative_weight)
+        train_cfg["small_defect_sampler"] = sampler_cfg
 
     if args.experiment_name is None:
         if args.variant is not None:
             config["experiment_name"] = f"hybrid_{args.variant}"
-        elif args.backbone is not None or args.small_defect_profile not in {None, "none"}:
+        elif (
+            args.backbone is not None
+            or args.small_defect_profile not in {None, "none"}
+            or sampler_override_requested
+        ):
             parts = ["baseline"]
             if args.backbone is not None:
                 parts.append(args.backbone)
             if args.small_defect_profile not in {None, "none"}:
                 parts.append(args.small_defect_profile)
+            if sampler_override_requested:
+                parts.append("sdsampler")
             config["experiment_name"] = "_".join(parts)
 
     config["train"] = train_cfg

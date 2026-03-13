@@ -14,6 +14,10 @@ def test_train_script_uses_shared_model_builder():
     assert "--variant" in content
     assert "--backbone" in content
     assert "--small-defect-profile" in content
+    assert "--small-defect-sampler" in content
+    assert "--small-weight" in content
+    assert "--positive-weight" in content
+    assert "--negative-weight" in content
     assert "--epochs" in content
     assert "--max-train-samples" in content
     assert "--max-val-samples" in content

@@ -50,7 +50,14 @@ class Trainer:
             )
         return moved_targets
 
-    def _build_loader(self, split_name: str, dataset_source: Any, shuffle: bool, max_samples: int | None = None):
+    def _build_loader(
+        self,
+        split_name: str,
+        dataset_source: Any,
+        shuffle: bool,
+        max_samples: int | None = None,
+        sampler_config: Dict[str, Any] | None = None,
+    ):
         return build_detection_dataloader(
             dataset_config_or_path=dataset_source,
             split=split_name,
@@ -61,6 +68,7 @@ class Trainer:
             train_ratio=float(self.split_cfg.get("train_ratio", 0.8)),
             val_ratio=float(self.split_cfg.get("val_ratio", 0.2)),
             max_samples=max_samples,
+            sampler_config=sampler_config,
         )
 
     def _build_optimizer(self) -> torch.optim.Optimizer:
@@ -109,6 +117,7 @@ class Trainer:
             dataset_source=train_source,
             shuffle=True,
             max_samples=int(max_train_samples) if max_train_samples is not None else None,
+            sampler_config=self.train_cfg.get("small_defect_sampler"),
         )
         val_loader, val_meta = self._build_loader(
             split_name=val_split_name,
@@ -134,6 +143,8 @@ class Trainer:
             train_meta["num_images"],
             val_meta["num_images"],
         )
+        if train_meta.get("sampler"):
+            logger.info("Train sampler: %s", train_meta["sampler"])
 
         for epoch in range(1, epochs + 1):
             self.model.train()
@@ -215,6 +226,8 @@ class Trainer:
             "num_val_images": val_meta["num_images"],
             "class_names": class_names,
         }
+        if train_meta.get("sampler") is not None:
+            training_summary["train_sampler"] = train_meta["sampler"]
         if best_val_payload is not None:
             training_summary["best_val_summary"] = best_val_payload["summary"]
 
