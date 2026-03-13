@@ -9,6 +9,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from src.models.backbones.torchvision_fpn import build_torchvision_fpn_backbone
+
 
 class _HeadConvBlock(nn.Sequential):
     """Depthwise-separable head block for lightweight dense prediction."""
@@ -127,6 +129,7 @@ def build_baseline_detector(model_config: Dict[str, Any], train_config: Dict[str
     """Build a lightweight baseline detector using torchvision detection models."""
     try:
         from torchvision.models.detection.anchor_utils import AnchorGenerator
+        from torchvision.models.detection import FasterRCNN
         from torchvision.models.detection import fasterrcnn_resnet50_fpn
         try:
             from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_fpn
@@ -193,6 +196,17 @@ def build_baseline_detector(model_config: Dict[str, Any], train_config: Dict[str
                 pretrained_backbone=False,
                 **detector_kwargs,
             )
+    elif backbone_name in {"densenet", "densenet121", "maxvit", "maxvit_t"}:
+        backbone = build_torchvision_fpn_backbone(
+            backbone_name=backbone_name,
+            out_channels=int(model_config.get("fpn_out_channels", 256)),
+        )
+        detector = FasterRCNN(
+            backbone=backbone,
+            num_classes=num_classes + 1,
+            min_size=image_size,
+            max_size=image_size,
+        )
     else:
         try:
             detector = fasterrcnn_resnet50_fpn(

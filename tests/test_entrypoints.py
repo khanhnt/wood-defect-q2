@@ -13,6 +13,8 @@ def test_train_script_uses_shared_model_builder():
     assert "model = build_model(model_config=model_cfg, train_config=config.get(\"train\", {}))" in content
     assert "--variant" in content
     assert "--backbone" in content
+    assert "densenet121" in content
+    assert "maxvit_t" in content
     assert "--small-defect-profile" in content
     assert "--small-defect-sampler" in content
     assert "--small-weight" in content
@@ -30,6 +32,8 @@ def test_evaluate_script_uses_shared_model_builder():
     assert "model = build_model(model_config=model_cfg, train_config=config.get(\"train\", {}))" in content
     assert "--variant" in content
     assert "--backbone" in content
+    assert "densenet121" in content
+    assert "maxvit_t" in content
     assert "--small-defect-profile" in content
     assert "--max-samples" in content
     assert "--small-defect-eval" in content

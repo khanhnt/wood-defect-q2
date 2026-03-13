@@ -36,7 +36,17 @@ def parse_args():
     parser.add_argument(
         "--backbone",
         type=str,
-        choices=["mobilenet", "mobilenet_320", "mobilenet_hr", "mobilenet_fpn", "resnet50"],
+        choices=[
+            "mobilenet",
+            "mobilenet_320",
+            "mobilenet_hr",
+            "mobilenet_fpn",
+            "resnet50",
+            "densenet",
+            "densenet121",
+            "maxvit",
+            "maxvit_t",
+        ],
         default=None,
         help="Optional baseline backbone override",
     )
