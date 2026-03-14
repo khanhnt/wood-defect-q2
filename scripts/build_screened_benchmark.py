@@ -12,7 +12,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.datasets.screened_benchmark import (
+    DEFAULT_SELECTION_MODE,
     DEFAULT_VSB7_CLASSES,
+    SUPPORTED_SELECTION_MODES,
     build_screened_benchmark_from_processed_manifest,
 )
 from src.utils.config import expand_path
@@ -59,6 +61,13 @@ def parse_args() -> argparse.Namespace:
         default=list(DEFAULT_VSB7_CLASSES),
         help="Foreground classes to keep in the screened benchmark.",
     )
+    parser.add_argument(
+        "--selection-mode",
+        type=str,
+        choices=list(SUPPORTED_SELECTION_MODES),
+        default=DEFAULT_SELECTION_MODE,
+        help="Selection strategy for choosing source images inside each split.",
+    )
     return parser.parse_args()
 
 
@@ -76,6 +85,7 @@ def main() -> None:
         kept_classes=args.classes,
         target_source_images=args.target_source_images,
         seed=args.seed,
+        selection_mode=args.selection_mode,
     )
 
     logger.info("Screened benchmark manifest: %s", result["manifest_path"])

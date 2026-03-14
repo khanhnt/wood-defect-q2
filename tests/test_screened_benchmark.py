@@ -79,3 +79,29 @@ def test_build_screened_processed_records_remaps_class_ids_and_keeps_negative_ti
     assert positive_record["num_small_annotations"] == 1
     assert negative_record["annotations"] == []
     assert negative_record["is_empty"] is True
+
+
+def test_select_screened_source_ids_supports_multiple_selection_modes():
+    records = [
+        _record("train/a", "train", "tile_a_0", [_ann("live_knot", 0)]),
+        _record("train/b", "train", "tile_b_0", [_ann("dead_knot", 1)]),
+        _record("train/c", "train", "tile_c_0", [_ann("resin", 2)]),
+        _record("train/d", "train", "tile_d_0", [_ann("crack", 4)]),
+        _record("train/e", "train", "tile_e_0", [_ann("knot_missing", 6)]),
+        _record("val/a", "val", "tile_f_0", [_ann("live_knot", 0), _ann("crack", 4)]),
+        _record("val/b", "val", "tile_g_0", [_ann("marrow", 5)]),
+        _record("test/a", "test", "tile_h_0", [_ann("dead_knot", 1), _ann("resin", 2)]),
+    ]
+
+    for selection_mode in ("random", "stratified", "rare_first"):
+        selected_source_ids, summary = select_screened_source_ids(
+            processed_records=records,
+            kept_classes=["live_knot", "dead_knot", "resin", "crack", "marrow", "knot_missing"],
+            target_source_images=6,
+            seed=42,
+            selection_mode=selection_mode,
+        )
+
+        assert len(selected_source_ids) == 6
+        assert summary["selection_mode"] == selection_mode
+        assert "selected_source_presence_by_split" in summary

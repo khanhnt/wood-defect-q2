@@ -28,6 +28,9 @@ DEFAULT_SPLIT_RATIOS = {
     "test": 0.1,
 }
 
+DEFAULT_SELECTION_MODE = "random"
+SUPPORTED_SELECTION_MODES = ("random", "stratified", "rare_first")
+
 
 def load_jsonl_records(path: str | Path) -> list[dict[str, Any]]:
     """Load JSONL records into memory."""
@@ -156,24 +159,161 @@ def _allocate_split_targets(
     return targets
 
 
+def _sorted_present_classes(class_counter: Mapping[str, int], kept_classes: Sequence[str]) -> list[str]:
+    """Return normalized present classes in a stable order."""
+    normalized_kept = [normalize_class_name(name) for name in kept_classes]
+    return [
+        class_name
+        for class_name in normalized_kept
+        if int(class_counter.get(class_name, 0)) > 0
+    ]
+
+
+def _select_random_ids(
+    candidate_ids: Sequence[str],
+    target_count: int,
+    seed: int,
+    split_name: str,
+) -> list[str]:
+    candidate_ids = list(candidate_ids)
+    split_rng = Random(f"{seed}:{split_name}:random")
+    split_rng.shuffle(candidate_ids)
+    return sorted(candidate_ids[:target_count], key=natural_sort_key)
+
+
+def _select_stratified_ids(
+    source_index: Mapping[str, Mapping[str, Any]],
+    candidate_ids: Sequence[str],
+    kept_classes: Sequence[str],
+    target_count: int,
+    seed: int,
+    split_name: str,
+) -> tuple[list[str], Counter[str]]:
+    normalized_kept = [normalize_class_name(name) for name in kept_classes]
+    tie_break_order = list(candidate_ids)
+    split_rng = Random(f"{seed}:{split_name}:stratified")
+    split_rng.shuffle(tie_break_order)
+    tie_break_rank = {source_image_id: index for index, source_image_id in enumerate(tie_break_order)}
+
+    remaining_ids = set(candidate_ids)
+    selected_ids: list[str] = []
+    selected_presence_counts: Counter[str] = Counter()
+
+    while remaining_ids and len(selected_ids) < target_count:
+        best_source_id = None
+        best_score = None
+        for source_image_id in remaining_ids:
+            present_classes = _sorted_present_classes(
+                class_counter=source_index[source_image_id]["class_counter"],
+                kept_classes=normalized_kept,
+            )
+            if not present_classes:
+                continue
+
+            score = (
+                sum(1.0 / (1.0 + selected_presence_counts[class_name]) for class_name in present_classes),
+                len(present_classes),
+                -tie_break_rank[source_image_id],
+            )
+            if best_score is None or score > best_score:
+                best_score = score
+                best_source_id = source_image_id
+
+        if best_source_id is None:
+            break
+
+        selected_ids.append(best_source_id)
+        remaining_ids.remove(best_source_id)
+        for class_name in _sorted_present_classes(
+            class_counter=source_index[best_source_id]["class_counter"],
+            kept_classes=normalized_kept,
+        ):
+            selected_presence_counts[class_name] += 1
+
+    return sorted(selected_ids, key=natural_sort_key), selected_presence_counts
+
+
+def _select_rare_first_ids(
+    source_index: Mapping[str, Mapping[str, Any]],
+    candidate_ids: Sequence[str],
+    kept_classes: Sequence[str],
+    target_count: int,
+    seed: int,
+    split_name: str,
+) -> tuple[list[str], Counter[str]]:
+    normalized_kept = [normalize_class_name(name) for name in kept_classes]
+    source_presence_counts: Counter[str] = Counter()
+    for source_image_id in candidate_ids:
+        present_classes = _sorted_present_classes(
+            class_counter=source_index[source_image_id]["class_counter"],
+            kept_classes=normalized_kept,
+        )
+        source_presence_counts.update(set(present_classes))
+
+    tie_break_order = list(candidate_ids)
+    split_rng = Random(f"{seed}:{split_name}:rare_first")
+    split_rng.shuffle(tie_break_order)
+    tie_break_rank = {source_image_id: index for index, source_image_id in enumerate(tie_break_order)}
+
+    scored_candidates = []
+    for source_image_id in candidate_ids:
+        present_classes = _sorted_present_classes(
+            class_counter=source_index[source_image_id]["class_counter"],
+            kept_classes=normalized_kept,
+        )
+        rarity_score = sum(1.0 / max(1, source_presence_counts[class_name]) for class_name in present_classes)
+        scored_candidates.append(
+            (
+                rarity_score,
+                len(present_classes),
+                -tie_break_rank[source_image_id],
+                source_image_id,
+            )
+        )
+
+    scored_candidates.sort(reverse=True)
+    chosen_ids = [source_image_id for _, _, _, source_image_id in scored_candidates[:target_count]]
+    selected_presence_counts: Counter[str] = Counter()
+    for source_image_id in chosen_ids:
+        selected_presence_counts.update(
+            set(
+                _sorted_present_classes(
+                    class_counter=source_index[source_image_id]["class_counter"],
+                    kept_classes=normalized_kept,
+                )
+            )
+        )
+    return sorted(chosen_ids, key=natural_sort_key), selected_presence_counts
+
+
 def select_screened_source_ids(
     processed_records: Sequence[Mapping[str, Any]],
     kept_classes: Sequence[str],
     target_source_images: int,
     seed: int = 42,
     split_ratios: Mapping[str, float] | None = None,
+    selection_mode: str = DEFAULT_SELECTION_MODE,
 ) -> tuple[set[str], dict[str, Any]]:
     """Select a reproducible screened source-image subset from processed tiles."""
+    selection_mode = str(selection_mode).lower()
+    if selection_mode not in SUPPORTED_SELECTION_MODES:
+        raise ValueError(
+            f"Unsupported selection_mode={selection_mode!r}. "
+            f"Expected one of: {', '.join(SUPPORTED_SELECTION_MODES)}."
+        )
+
     source_index = _build_source_index(processed_records=processed_records, kept_classes=kept_classes)
 
     split_candidates: dict[str, list[str]] = {}
-    split_class_counts: dict[str, Counter[str]] = {}
+    split_source_presence_counts: dict[str, Counter[str]] = {}
     for source_image_id, payload in source_index.items():
         if not payload["class_counter"]:
             continue
         split_name = payload["split"]
         split_candidates.setdefault(split_name, []).append(source_image_id)
-        split_class_counts.setdefault(split_name, Counter()).update(payload["class_counter"])
+        split_source_presence_counts.setdefault(split_name, Counter()).update(
+            set(_sorted_present_classes(payload["class_counter"], kept_classes))
+        )
 
     split_targets = _allocate_split_targets(
         split_candidates=split_candidates,
@@ -184,13 +324,46 @@ def select_screened_source_ids(
     selected_source_ids: set[str] = set()
     selected_class_counts: Counter[str] = Counter()
     selected_split_counts: dict[str, int] = {}
+    selected_source_presence_counts_by_split: dict[str, dict[str, int]] = {}
 
     for split_name, target_count in split_targets.items():
         candidate_ids = sorted(split_candidates.get(split_name, []), key=natural_sort_key)
-        split_rng = Random(f"{seed}:{split_name}")
-        split_rng.shuffle(candidate_ids)
-        chosen_ids = sorted(candidate_ids[:target_count], key=natural_sort_key)
+        if selection_mode == "random":
+            chosen_ids = _select_random_ids(
+                candidate_ids=candidate_ids,
+                target_count=target_count,
+                seed=seed,
+                split_name=split_name,
+            )
+            split_presence_counts = Counter()
+            for source_image_id in chosen_ids:
+                split_presence_counts.update(
+                    set(_sorted_present_classes(source_index[source_image_id]["class_counter"], kept_classes))
+                )
+        elif selection_mode == "stratified":
+            chosen_ids, split_presence_counts = _select_stratified_ids(
+                source_index=source_index,
+                candidate_ids=candidate_ids,
+                kept_classes=kept_classes,
+                target_count=target_count,
+                seed=seed,
+                split_name=split_name,
+            )
+        else:
+            chosen_ids, split_presence_counts = _select_rare_first_ids(
+                source_index=source_index,
+                candidate_ids=candidate_ids,
+                kept_classes=kept_classes,
+                target_count=target_count,
+                seed=seed,
+                split_name=split_name,
+            )
+
         selected_split_counts[split_name] = len(chosen_ids)
+        selected_source_presence_counts_by_split[split_name] = {
+            class_name: int(split_presence_counts.get(class_name, 0))
+            for class_name in [normalize_class_name(name) for name in kept_classes]
+        }
         selected_source_ids.update(chosen_ids)
         for source_image_id in chosen_ids:
             selected_class_counts.update(source_index[source_image_id]["class_counter"])
@@ -199,12 +372,21 @@ def select_screened_source_ids(
         "target_source_images": int(target_source_images),
         "selected_source_images": len(selected_source_ids),
         "seed": int(seed),
+        "selection_mode": selection_mode,
         "kept_classes": [normalize_class_name(name) for name in kept_classes],
         "available_source_images_by_split": {
             split_name: len(source_ids)
             for split_name, source_ids in sorted(split_candidates.items())
         },
+        "available_source_presence_by_split": {
+            split_name: {
+                class_name: int(split_source_presence_counts.get(split_name, Counter()).get(class_name, 0))
+                for class_name in [normalize_class_name(name) for name in kept_classes]
+            }
+            for split_name in sorted(split_candidates.keys())
+        },
         "selected_source_images_by_split": dict(sorted(selected_split_counts.items())),
+        "selected_source_presence_by_split": dict(sorted(selected_source_presence_counts_by_split.items())),
         "selected_annotation_count_by_class": {
             class_name: int(selected_class_counts.get(class_name, 0))
             for class_name in [normalize_class_name(name) for name in kept_classes]
@@ -262,6 +444,7 @@ def build_screened_benchmark_from_processed_manifest(
     target_source_images: int = 3600,
     seed: int = 42,
     split_ratios: Mapping[str, float] | None = None,
+    selection_mode: str = DEFAULT_SELECTION_MODE,
 ) -> dict[str, Any]:
     """Create a screened processed-manifest benchmark without re-tiling source images."""
     normalized_classes = [normalize_class_name(name) for name in (kept_classes or DEFAULT_VSB7_CLASSES)]
@@ -272,6 +455,7 @@ def build_screened_benchmark_from_processed_manifest(
         target_source_images=int(target_source_images),
         seed=int(seed),
         split_ratios=split_ratios,
+        selection_mode=selection_mode,
     )
     screened_records = build_screened_processed_records(
         processed_records=processed_records,
