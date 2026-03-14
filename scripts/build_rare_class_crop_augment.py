@@ -72,6 +72,25 @@ def parse_args() -> argparse.Namespace:
         help="Optional per-class global caps in the form class_name=limit.",
     )
     parser.add_argument(
+        "--candidate-selection-mode",
+        type=str,
+        choices=("manifest", "balanced"),
+        default="balanced",
+        help="How to choose crop candidates globally after proposal generation.",
+    )
+    parser.add_argument(
+        "--head-classes",
+        nargs="+",
+        default=["live_knot", "dead_knot"],
+        help="Head classes treated as dominant context when ranking or filtering crop candidates.",
+    )
+    parser.add_argument(
+        "--max-window-head-annotation-count",
+        type=int,
+        default=None,
+        help="Optional hard cap on how many head-class annotations may appear inside one kept crop.",
+    )
+    parser.add_argument(
         "--max-crops-per-record",
         type=int,
         default=2,
@@ -174,6 +193,9 @@ def main() -> None:
         dataset_name=args.dataset_name,
         target_classes=args.target_classes,
         class_max_crops=_parse_class_max_crops(args.class_max_crops),
+        candidate_selection_mode=args.candidate_selection_mode,
+        head_classes=args.head_classes,
+        max_window_head_annotation_count=args.max_window_head_annotation_count,
         max_crops_per_record=args.max_crops_per_record,
         edge_margin_px=args.edge_margin_px,
         merge_iou_threshold=args.merge_iou_threshold,

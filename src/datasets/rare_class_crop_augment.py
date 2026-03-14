@@ -56,6 +56,20 @@ class CropCandidate:
     member_indices: tuple[int, ...]
     window_xyxy: tuple[int, int, int, int]
     primary_box_count: int
+    parent_annotation_count: int
+    parent_present_class_count: int
+    parent_head_annotation_count: int
+    window_annotation_count: int
+    window_present_class_count: int
+    window_head_annotation_count: int
+
+
+@dataclass(frozen=True)
+class CropPlan:
+    """A crop candidate plus the parent record index it comes from."""
+
+    record_index: int
+    candidate: CropCandidate
 
 
 def _resolve_image_path(record: Mapping[str, Any], image_root_dir: str | Path | None) -> Path:
@@ -202,6 +216,7 @@ def _build_crop_candidates(
     record: Mapping[str, Any],
     target_classes: Sequence[str],
     class_crop_profiles: Mapping[str, Mapping[str, float]],
+    head_classes: Sequence[str],
     edge_margin_px: float,
     merge_iou_threshold: float,
     merge_center_distance_px: float,
@@ -212,8 +227,16 @@ def _build_crop_candidates(
     width = int(record["width"])
     height = int(record["height"])
     normalized_targets = [normalize_class_name(name) for name in target_classes]
+    normalized_head_classes = {normalize_class_name(name) for name in head_classes}
     annotations = list(record.get("annotations", []))
     candidates: list[CropCandidate] = []
+    parent_present_classes = {
+        normalize_class_name(annotation["class_name"])
+        for annotation in annotations
+    }
+    parent_head_annotation_count = sum(
+        1 for annotation in annotations if normalize_class_name(annotation["class_name"]) in normalized_head_classes
+    )
 
     for class_name in normalized_targets:
         matching_indices: list[int] = []
@@ -268,6 +291,24 @@ def _build_crop_candidates(
                 image_height=height,
             )
 
+            window_present_classes = set()
+            window_annotation_count = 0
+            window_head_annotation_count = 0
+            for annotation in annotations:
+                clipped_box, retained_ratio = _clip_annotation_to_window(
+                    annotation=annotation,
+                    record_width=width,
+                    record_height=height,
+                    window_xyxy=window_xyxy,
+                )
+                if clipped_box is None or retained_ratio <= 0.0:
+                    continue
+                annotation_class = normalize_class_name(annotation["class_name"])
+                window_present_classes.add(annotation_class)
+                window_annotation_count += 1
+                if annotation_class in normalized_head_classes:
+                    window_head_annotation_count += 1
+
             if min(
                 float(window_xyxy[2] - window_xyxy[0]),
                 float(window_xyxy[3] - window_xyxy[1]),
@@ -289,6 +330,12 @@ def _build_crop_candidates(
                     member_indices=tuple(matching_indices[index] for index in cluster),
                     window_xyxy=window_xyxy,
                     primary_box_count=len(cluster),
+                    parent_annotation_count=len(annotations),
+                    parent_present_class_count=len(parent_present_classes),
+                    parent_head_annotation_count=parent_head_annotation_count,
+                    window_annotation_count=window_annotation_count,
+                    window_present_class_count=len(window_present_classes),
+                    window_head_annotation_count=window_head_annotation_count,
                 )
             )
             if len(candidates) >= int(max_crops_per_record):
@@ -296,6 +343,54 @@ def _build_crop_candidates(
                 return candidates
 
     return candidates
+
+
+def _crop_plan_quality_key(plan: CropPlan) -> tuple[float, ...]:
+    candidate = plan.candidate
+    return (
+        float(candidate.window_present_class_count),
+        float(candidate.window_head_annotation_count),
+        float(candidate.parent_present_class_count),
+        float(candidate.parent_annotation_count),
+        -float(candidate.primary_box_count),
+        float(candidate.window_annotation_count),
+        float(plan.record_index),
+        float(candidate.cluster_index),
+    )
+
+
+def _order_crop_plans(
+    crop_plans: Sequence[CropPlan],
+    target_classes: Sequence[str],
+    candidate_selection_mode: str,
+) -> list[CropPlan]:
+    normalized_mode = str(candidate_selection_mode).lower()
+    if normalized_mode == "manifest":
+        return list(crop_plans)
+
+    if normalized_mode != "balanced":
+        raise ValueError(
+            f"Unsupported candidate_selection_mode={candidate_selection_mode!r}. Expected 'manifest' or 'balanced'."
+        )
+
+    normalized_targets = [normalize_class_name(name) for name in target_classes]
+    plans_by_class: dict[str, list[CropPlan]] = {class_name: [] for class_name in normalized_targets}
+    for crop_plan in crop_plans:
+        plans_by_class.setdefault(crop_plan.candidate.class_name, []).append(crop_plan)
+
+    for class_name in plans_by_class:
+        plans_by_class[class_name].sort(key=_crop_plan_quality_key)
+
+    ordered: list[CropPlan] = []
+    remaining = True
+    while remaining:
+        remaining = False
+        for class_name in normalized_targets:
+            queue = plans_by_class.get(class_name, [])
+            if queue:
+                ordered.append(queue.pop(0))
+                remaining = True
+    return ordered
 
 
 def _clip_annotation_to_window(
@@ -479,6 +574,12 @@ def _build_augmented_record(
         "augmentation_type": "rare_class_crop",
         "augmentation_primary_class": candidate.class_name,
         "crop_xyxy_parent": [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)],
+        "augmentation_parent_annotation_count": int(candidate.parent_annotation_count),
+        "augmentation_parent_present_class_count": int(candidate.parent_present_class_count),
+        "augmentation_parent_head_annotation_count": int(candidate.parent_head_annotation_count),
+        "augmentation_window_annotation_count": int(candidate.window_annotation_count),
+        "augmentation_window_present_class_count": int(candidate.window_present_class_count),
+        "augmentation_window_head_annotation_count": int(candidate.window_head_annotation_count),
     }
     tag_small_defects([augmented_record], rule_config=small_defect_rule)
     return augmented_record
@@ -503,12 +604,16 @@ def build_rare_class_crop_augmented_dataset(
     jpeg_quality: int = 97,
     small_defect_rule: Mapping[str, Any] | None = None,
     class_max_crops: Mapping[str, int] | None = None,
+    candidate_selection_mode: str = "manifest",
+    head_classes: Sequence[str] | None = None,
+    max_window_head_annotation_count: int | None = None,
     repo_output_dir: str | Path = "outputs/tables",
 ) -> dict[str, Any]:
     """Append rare-class crop records to a processed manifest and export a new manifest."""
     input_manifest = Path(input_manifest_path)
     output_root = Path(output_root_dir)
     target_classes = [normalize_class_name(name) for name in (target_classes or DEFAULT_RARE_CLASS_TARGETS)]
+    head_classes = [normalize_class_name(name) for name in (head_classes or ["live_knot", "dead_knot"])]
     class_crop_profiles = {
         normalize_class_name(class_name): {
             "scale": float(profile["scale"]),
@@ -530,9 +635,13 @@ def build_rare_class_crop_augmented_dataset(
     augmented_records: list[dict[str, Any]] = []
     generated_by_class: Counter[str] = Counter()
     rejection_counter: Counter[str] = Counter()
+    accepted_parent_present_class_count: Counter[int] = Counter()
+    accepted_window_present_class_count: Counter[int] = Counter()
+    accepted_window_head_annotation_count: Counter[int] = Counter()
     small_defect_rule = dict(DEFAULT_SMALL_DEFECT_RULE | dict(small_defect_rule or {}))
+    crop_plans: list[CropPlan] = []
 
-    for record in records:
+    for record_index, record in enumerate(records):
         normalized_record = deepcopy(dict(record))
         normalized_record["dataset_name"] = dataset_name
         normalized_record["image_path"] = str(_resolve_image_path(record, image_root_dir=image_root_dir))
@@ -552,6 +661,7 @@ def build_rare_class_crop_augmented_dataset(
             record=record,
             target_classes=target_classes,
             class_crop_profiles=class_crop_profiles,
+            head_classes=head_classes,
             edge_margin_px=edge_margin_px,
             merge_iou_threshold=merge_iou_threshold,
             merge_center_distance_px=merge_center_distance_px,
@@ -559,35 +669,63 @@ def build_rare_class_crop_augmented_dataset(
             max_window_iou=max_window_iou,
             rejection_counter=rejection_counter,
         )
-
-        record_crop_index = 0
         for candidate in candidates:
-            class_cap = class_max_crops.get(candidate.class_name)
-            if class_cap is not None and generated_by_class[candidate.class_name] >= class_cap:
-                rejection_counter[f"class_cap_reached::{candidate.class_name}"] += 1
-                continue
-
-            augmented_record = _build_augmented_record(
-                record=record,
-                image_root_dir=image_root_dir,
-                output_root_dir=output_root,
-                dataset_name=dataset_name,
-                candidate=candidate,
-                record_crop_index=record_crop_index,
-                min_retained_ratio_target=min_retained_ratio_target,
-                min_retained_ratio_context=min_retained_ratio_context,
-                min_box_size_px=min_box_size_px,
-                target_border_margin_px=target_border_margin_px,
-                jpeg_quality=jpeg_quality,
-                small_defect_rule=small_defect_rule,
-                rejection_counter=rejection_counter,
+            crop_plans.append(
+                CropPlan(
+                    record_index=record_index,
+                    candidate=candidate,
+                )
             )
-            if augmented_record is None:
-                continue
 
-            augmented_records.append(augmented_record)
-            generated_by_class[candidate.class_name] += 1
-            record_crop_index += 1
+    ordered_crop_plans = _order_crop_plans(
+        crop_plans=crop_plans,
+        target_classes=target_classes,
+        candidate_selection_mode=candidate_selection_mode,
+    )
+    generated_per_record: Counter[int] = Counter()
+
+    for crop_plan in ordered_crop_plans:
+        record = records[crop_plan.record_index]
+        candidate = crop_plan.candidate
+        if generated_per_record[crop_plan.record_index] >= int(max_crops_per_record):
+            rejection_counter["record_cap_reached_post_ordering"] += 1
+            continue
+        if (
+            max_window_head_annotation_count is not None
+            and int(candidate.window_head_annotation_count) > int(max_window_head_annotation_count)
+        ):
+            rejection_counter["window_head_context_rejected"] += 1
+            continue
+
+        class_cap = class_max_crops.get(candidate.class_name)
+        if class_cap is not None and generated_by_class[candidate.class_name] >= class_cap:
+            rejection_counter[f"class_cap_reached::{candidate.class_name}"] += 1
+            continue
+
+        augmented_record = _build_augmented_record(
+            record=record,
+            image_root_dir=image_root_dir,
+            output_root_dir=output_root,
+            dataset_name=dataset_name,
+            candidate=candidate,
+            record_crop_index=generated_per_record[crop_plan.record_index],
+            min_retained_ratio_target=min_retained_ratio_target,
+            min_retained_ratio_context=min_retained_ratio_context,
+            min_box_size_px=min_box_size_px,
+            target_border_margin_px=target_border_margin_px,
+            jpeg_quality=jpeg_quality,
+            small_defect_rule=small_defect_rule,
+            rejection_counter=rejection_counter,
+        )
+        if augmented_record is None:
+            continue
+
+        augmented_records.append(augmented_record)
+        generated_by_class[candidate.class_name] += 1
+        generated_per_record[crop_plan.record_index] += 1
+        accepted_parent_present_class_count[int(candidate.parent_present_class_count)] += 1
+        accepted_window_present_class_count[int(candidate.window_present_class_count)] += 1
+        accepted_window_head_annotation_count[int(candidate.window_head_annotation_count)] += 1
 
     combined_records = normalized_original_records + augmented_records
     class_names = _resolve_class_names(combined_records)
@@ -615,6 +753,11 @@ def build_rare_class_crop_augmented_dataset(
                 "rejection_counts": dict(sorted(rejection_counter.items())),
                 "class_crop_profiles": class_crop_profiles,
                 "class_max_crops": class_max_crops,
+                "candidate_selection_mode": str(candidate_selection_mode),
+                "head_classes": list(head_classes),
+                "max_window_head_annotation_count": None
+                if max_window_head_annotation_count is None
+                else int(max_window_head_annotation_count),
                 "max_crops_per_record": int(max_crops_per_record),
                 "edge_margin_px": float(edge_margin_px),
                 "merge_iou_threshold": float(merge_iou_threshold),
@@ -626,6 +769,15 @@ def build_rare_class_crop_augmented_dataset(
                 "max_window_iou": float(max_window_iou),
                 "jpeg_quality": int(jpeg_quality),
                 "small_defect_rule": dict(small_defect_rule),
+                "accepted_parent_present_class_count": {
+                    str(key): int(value) for key, value in sorted(accepted_parent_present_class_count.items())
+                },
+                "accepted_window_present_class_count": {
+                    str(key): int(value) for key, value in sorted(accepted_window_present_class_count.items())
+                },
+                "accepted_window_head_annotation_count": {
+                    str(key): int(value) for key, value in sorted(accepted_window_head_annotation_count.items())
+                },
             },
         }
     )
