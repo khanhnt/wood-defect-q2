@@ -1,0 +1,17 @@
+dataset_name: large_scale_wood_surface_defects_vsb7_3600_rare_first_rarecrop
+root_dir: ${WOOD_MAIN_PROCESSED_ROOT}
+manifest_path: ${WOOD_MAIN_PROCESSED_ROOT}/benchmarks/vsb7_3600_rare_first_rarecrop/manifest.jsonl
+classes:
+  - live_knot
+  - dead_knot
+  - resin
+  - knot_with_crack
+  - crack
+  - marrow
+  - knot_missing
+small_defect:
+  enabled: true
+  combine: any
+  min_area_ratio: 0.01
+  min_width_px: 16
+  min_height_px: 16
