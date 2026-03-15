@@ -21,8 +21,11 @@ from src.datasets.base_dataset import (
 from src.datasets.server_preprocessing import (
     assign_splits_by_source_image,
     build_processed_summary,
+    choose_negative_tiles,
     export_processed_dataset,
+    generate_tile_windows,
     normalize_split_name,
+    remap_annotations_to_tile,
     save_image_as_jpeg,
 )
 from src.utils.config import expand_path
@@ -231,6 +234,150 @@ def load_vnwoodknot_annotations(config: Dict[str, Any]) -> list[Dict[str, Any]]:
     return records
 
 
+def _copy_source_record_to_processed(
+    *,
+    dataset_name: str,
+    processed_root_dir: Path,
+    source_record: Dict[str, Any],
+    jpeg_quality: int,
+) -> Dict[str, Any]:
+    split_name = normalize_split_name(source_record.get("split")) or "train"
+    source_category = source_record.get("source_category") or "unspecified"
+    relative_stem = Path(source_record["image_id"])
+    relative_image_path = Path("images") / split_name / source_category / f"{relative_stem.name}.jpg"
+
+    with Image.open(source_record["image_path"]) as image:
+        save_image_as_jpeg(
+            image=image,
+            output_path=processed_root_dir / relative_image_path,
+            quality=jpeg_quality,
+        )
+
+    return {
+        "dataset_name": dataset_name,
+        "image_id": str(relative_image_path.with_suffix("")).replace("\\", "/"),
+        "image_path": str(relative_image_path).replace("\\", "/"),
+        "split": split_name,
+        "source_category": source_category,
+        "source_image_id": source_record["image_id"],
+        "width": int(source_record["width"]),
+        "height": int(source_record["height"]),
+        "annotations": deepcopy(source_record.get("annotations", [])),
+        "is_empty": bool(source_record.get("is_empty", False)),
+        "empty_reason": source_record.get("empty_reason"),
+        "issues": list(source_record.get("issues", [])),
+        "num_invalid_boxes": int(source_record.get("num_invalid_boxes", 0)),
+        "num_clipped_boxes": int(source_record.get("num_clipped_boxes", 0)),
+        "annotation_path": None,
+        "semantic_map_path": None,
+    }
+
+
+def _tile_source_record_to_processed(
+    *,
+    dataset_name: str,
+    processed_root_dir: Path,
+    source_record: Dict[str, Any],
+    jpeg_quality: int,
+    tile_cfg: Dict[str, Any],
+    negative_cfg: Dict[str, Any],
+) -> list[Dict[str, Any]]:
+    source_width = int(source_record["width"])
+    source_height = int(source_record["height"])
+    split_name = normalize_split_name(source_record.get("split")) or "train"
+    source_category = source_record.get("source_category") or "unspecified"
+    source_image_id = str(source_record["image_id"])
+    source_stem = Path(source_image_id).name
+    tile_size = int(tile_cfg.get("size", 1024))
+    tile_overlap = int(tile_cfg.get("overlap", 128))
+    min_box_visibility = float(tile_cfg.get("min_box_visibility", 0.5))
+    keep_all_negative_tiles = bool(tile_cfg.get("keep_all_negative_tiles", True))
+
+    tile_entries: list[Dict[str, Any]] = []
+    negative_tile_entries: list[Dict[str, Any]] = []
+    positive_tile_count = 0
+
+    windows = generate_tile_windows(
+        width=source_width,
+        height=source_height,
+        tile_size=tile_size,
+        overlap=tile_overlap,
+    )
+
+    for tile_index, window in enumerate(windows):
+        remapped_annotations = remap_annotations_to_tile(
+            annotations=source_record.get("annotations", []),
+            image_width=source_width,
+            image_height=source_height,
+            tile_window=window,
+            min_visibility=min_box_visibility,
+        )
+
+        tile_name = (
+            f"{source_stem}__x{window['left']:04d}_y{window['top']:04d}"
+            f"_w{window['width']:04d}_h{window['height']:04d}"
+        )
+        relative_image_path = Path("images") / split_name / source_category / f"{tile_name}.jpg"
+        tile_record = {
+            "dataset_name": dataset_name,
+            "image_id": str(relative_image_path.with_suffix("")).replace("\\", "/"),
+            "image_path": str(relative_image_path).replace("\\", "/"),
+            "split": split_name,
+            "source_category": source_category,
+            "source_image_id": source_image_id,
+            "width": int(window["width"]),
+            "height": int(window["height"]),
+            "annotations": remapped_annotations,
+            "is_empty": len(remapped_annotations) == 0,
+            "empty_reason": None if remapped_annotations else "negative_tile",
+            "issues": list(source_record.get("issues", [])),
+            "num_invalid_boxes": 0,
+            "num_clipped_boxes": 0,
+            "annotation_path": None,
+            "semantic_map_path": None,
+            "tile_origin_xy": [int(window["left"]), int(window["top"])],
+            "tile_index": tile_index,
+        }
+        tile_entry = {
+            "record": tile_record,
+            "window": window,
+            "relative_image_path": relative_image_path,
+        }
+        if remapped_annotations:
+            positive_tile_count += 1
+            tile_entries.append(tile_entry)
+        elif keep_all_negative_tiles:
+            tile_entries.append(tile_entry)
+        else:
+            negative_tile_entries.append(tile_entry)
+
+    if not keep_all_negative_tiles:
+        tile_entries.extend(
+            choose_negative_tiles(
+                negative_tiles=negative_tile_entries,
+                num_positive_tiles=positive_tile_count,
+                source_image_id=source_image_id,
+                negative_config=negative_cfg,
+            )
+        )
+
+    processed_records: list[Dict[str, Any]] = []
+    if not tile_entries:
+        return processed_records
+
+    with Image.open(source_record["image_path"]) as source_image:
+        for tile_entry in tile_entries:
+            window = tile_entry["window"]
+            tile_image = source_image.crop(
+                (window["left"], window["top"], window["right"], window["bottom"])
+            )
+            output_path = processed_root_dir / tile_entry["relative_image_path"]
+            save_image_as_jpeg(tile_image, output_path, quality=jpeg_quality)
+            processed_records.append(deepcopy(tile_entry["record"]))
+
+    return processed_records
+
+
 def preprocess_vnwoodknot_for_server(config: Dict[str, Any]) -> Dict[str, Any]:
     """Create a compact processed VNWoodKnot dataset for server-side training."""
     source_records, report = parse_vnwoodknot_dataset(config)
@@ -245,6 +392,9 @@ def preprocess_vnwoodknot_for_server(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("processed_root_dir is required for preprocessing.")
 
     jpeg_quality = int(config.get("jpeg_quality", 97))
+    tile_cfg = dict(config.get("tile", {}))
+    tile_enabled = bool(tile_cfg.get("enabled", False))
+    negative_cfg = dict(config.get("negative_sampling", {}))
     repo_output_dir = config.get("repo_output_dir", "outputs/tables")
     max_images = config.get("max_images")
     processed_records: list[Dict[str, Any]] = []
@@ -253,37 +403,26 @@ def preprocess_vnwoodknot_for_server(config: Dict[str, Any]) -> Dict[str, Any]:
         if max_images is not None and record_index >= int(max_images):
             break
 
-        split_name = normalize_split_name(source_record.get("split")) or "train"
-        source_category = source_record.get("source_category") or "unspecified"
-        relative_stem = Path(source_record["image_id"])
-        relative_image_path = Path("images") / split_name / source_category / f"{relative_stem.name}.jpg"
-
-        with Image.open(source_record["image_path"]) as image:
-            save_image_as_jpeg(
-                image=image,
-                output_path=processed_root_dir / relative_image_path,
-                quality=jpeg_quality,
+        if tile_enabled:
+            processed_records.extend(
+                _tile_source_record_to_processed(
+                    dataset_name=report["dataset_name"],
+                    processed_root_dir=processed_root_dir,
+                    source_record=source_record,
+                    jpeg_quality=jpeg_quality,
+                    tile_cfg=tile_cfg,
+                    negative_cfg=negative_cfg,
+                )
             )
-
-        processed_record = {
-            "dataset_name": report["dataset_name"],
-            "image_id": str(relative_image_path.with_suffix("")).replace("\\", "/"),
-            "image_path": str(relative_image_path).replace("\\", "/"),
-            "split": split_name,
-            "source_category": source_category,
-            "source_image_id": source_record["image_id"],
-            "width": int(source_record["width"]),
-            "height": int(source_record["height"]),
-            "annotations": deepcopy(source_record.get("annotations", [])),
-            "is_empty": bool(source_record.get("is_empty", False)),
-            "empty_reason": source_record.get("empty_reason"),
-            "issues": list(source_record.get("issues", [])),
-            "num_invalid_boxes": int(source_record.get("num_invalid_boxes", 0)),
-            "num_clipped_boxes": int(source_record.get("num_clipped_boxes", 0)),
-            "annotation_path": None,
-            "semantic_map_path": None,
-        }
-        processed_records.append(processed_record)
+        else:
+            processed_records.append(
+                _copy_source_record_to_processed(
+                    dataset_name=report["dataset_name"],
+                    processed_root_dir=processed_root_dir,
+                    source_record=source_record,
+                    jpeg_quality=jpeg_quality,
+                )
+            )
 
     summary, class_distribution = build_processed_summary(
         dataset_name=report["dataset_name"],
