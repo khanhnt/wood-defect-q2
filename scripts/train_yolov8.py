@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train a YOLOv8 baseline on a YOLO-exported dataset."""
+"""Train a YOLOv8 model on a YOLO-exported dataset."""
 
 from __future__ import annotations
 
@@ -31,6 +31,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--patience", type=int, default=50)
     parser.add_argument("--project-dir", type=str, default="outputs/yolo")
+    parser.add_argument(
+        "--box-loss",
+        type=str,
+        default="default",
+        choices=["default", "wniou"],
+        help="Optional box regression loss override for Ultralytics training.",
+    )
+    parser.add_argument(
+        "--wniou-lambda-nwd",
+        type=float,
+        default=0.30,
+        help="Blend weight for the NWD term inside the WNIoU hybrid loss.",
+    )
+    parser.add_argument(
+        "--wniou-focus-alpha",
+        type=float,
+        default=0.50,
+        help="Difficulty reweighting strength for the WNIoU hybrid loss.",
+    )
+    parser.add_argument(
+        "--wniou-focus-gamma",
+        type=float,
+        default=1.00,
+        help="Exponent used by the WNIoU difficulty reweighting term.",
+    )
+    parser.add_argument(
+        "--wniou-distance-scale",
+        type=float,
+        default=0.05,
+        help="Distance scale for the normalized Wasserstein similarity on xyxy-normalized boxes.",
+    )
     return parser.parse_args()
 
 
@@ -42,6 +73,18 @@ def main() -> None:
         raise ImportError(
             "ultralytics is required for YOLOv8 training. Install it with `python -m pip install ultralytics`."
         ) from exc
+    if args.box_loss == "wniou":
+        from src.losses.yolo_wniou import apply_wniou_patch
+
+        wniou_config = apply_wniou_patch(
+            lambda_nwd=float(args.wniou_lambda_nwd),
+            focus_alpha=float(args.wniou_focus_alpha),
+            focus_gamma=float(args.wniou_focus_gamma),
+            distance_scale=float(args.wniou_distance_scale),
+        )
+        logger.info("Enabled WNIoU box loss patch: %s", wniou_config)
+    else:
+        wniou_config = None
 
     project_dir = ensure_dir(args.project_dir)
     model = YOLO(args.weights)
@@ -70,6 +113,8 @@ def main() -> None:
             "batch": int(args.batch),
             "device": str(args.device),
             "project_dir": str(project_dir),
+            "box_loss": str(args.box_loss),
+            "wniou_config": wniou_config,
             "result": str(results),
             "best_checkpoint_path": str(project_dir / args.experiment_name / "weights" / "best.pt"),
         },
