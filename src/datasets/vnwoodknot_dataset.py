@@ -28,6 +28,7 @@ from src.datasets.server_preprocessing import (
     remap_annotations_to_tile,
     save_image_as_jpeg,
 )
+from src.datasets.screened_benchmark import load_jsonl_records
 from src.utils.config import expand_path
 
 
@@ -376,6 +377,123 @@ def _tile_source_record_to_processed(
             processed_records.append(deepcopy(tile_entry["record"]))
 
     return processed_records
+
+
+def _resolve_processed_record_image_path(
+    record: Mapping[str, Any],
+    *,
+    image_root_dir: Path | None,
+    input_manifest_path: Path,
+) -> Path:
+    image_path_value = record.get("image_path")
+    if not image_path_value:
+        raise ValueError(f"Processed record {record.get('image_id')!r} is missing image_path.")
+
+    image_path = Path(str(image_path_value))
+    if image_path.is_absolute():
+        if not image_path.exists():
+            raise FileNotFoundError(f"Processed image does not exist: {image_path}")
+        return image_path
+
+    candidates: list[Path] = []
+    if image_root_dir is not None:
+        candidates.append(image_root_dir / image_path)
+    candidates.append(input_manifest_path.parent / image_path)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    raise FileNotFoundError(
+        f"Processed image {image_path!s} could not be resolved from "
+        f"image_root_dir={image_root_dir!s} or manifest dir {input_manifest_path.parent!s}."
+    )
+
+
+def build_tiled_vnwoodknot_from_processed_manifest(
+    *,
+    input_manifest_path: str | Path,
+    output_root_dir: str | Path,
+    image_root_dir: str | Path | None = None,
+    dataset_name: str = "vnwoodknot_tiled",
+    repo_output_dir: str | Path = "outputs/tables",
+    tile_cfg: Mapping[str, Any] | None = None,
+    negative_cfg: Mapping[str, Any] | None = None,
+    jpeg_quality: int = 97,
+    max_images: int | None = None,
+) -> Dict[str, Any]:
+    """Retile an existing processed VNWoodKnot manifest into a matched-tiling external protocol."""
+    manifest_path = Path(input_manifest_path)
+    processed_root_dir = Path(output_root_dir)
+    resolved_image_root = Path(image_root_dir) if image_root_dir is not None else None
+
+    source_records = load_jsonl_records(manifest_path)
+    tile_cfg_resolved = dict(tile_cfg or {})
+    tile_cfg_resolved.setdefault("size", 1024)
+    tile_cfg_resolved.setdefault("overlap", 128)
+    tile_cfg_resolved.setdefault("min_box_visibility", 0.5)
+    tile_cfg_resolved.setdefault("keep_all_negative_tiles", True)
+    negative_cfg_resolved = dict(negative_cfg or {})
+
+    processed_records: list[Dict[str, Any]] = []
+    limited_source_records = source_records[: len(source_records) if max_images is None else int(max_images)]
+
+    for source_record in limited_source_records:
+        source_record_copy = deepcopy(source_record)
+        source_record_copy["image_path"] = str(
+            _resolve_processed_record_image_path(
+                source_record_copy,
+                image_root_dir=resolved_image_root,
+                input_manifest_path=manifest_path,
+            )
+        )
+        source_record_copy["source_image_id"] = str(
+            source_record_copy.get("source_image_id") or source_record_copy["image_id"]
+        )
+        processed_records.extend(
+            _tile_source_record_to_processed(
+                dataset_name=dataset_name,
+                processed_root_dir=processed_root_dir,
+                source_record=source_record_copy,
+                jpeg_quality=int(jpeg_quality),
+                tile_cfg=tile_cfg_resolved,
+                negative_cfg=negative_cfg_resolved,
+            )
+        )
+
+    summary, class_distribution = build_processed_summary(
+        dataset_name=dataset_name,
+        source_records=limited_source_records,
+        processed_records=processed_records,
+        processed_root_dir=processed_root_dir,
+        preprocess_config={
+            "dataset_name": dataset_name,
+            "input_manifest_path": str(manifest_path),
+            "image_root_dir": str(resolved_image_root) if resolved_image_root is not None else None,
+            "processed_root_dir": str(processed_root_dir),
+            "repo_output_dir": str(repo_output_dir),
+            "jpeg_quality": int(jpeg_quality),
+            "tile": tile_cfg_resolved,
+            "negative_sampling": negative_cfg_resolved,
+            "max_images": max_images,
+        },
+    )
+    artifacts = export_processed_dataset(
+        dataset_name=dataset_name,
+        processed_root_dir=processed_root_dir,
+        processed_records=processed_records,
+        summary=summary,
+        class_distribution=class_distribution,
+        repo_output_dir=repo_output_dir,
+    )
+
+    return {
+        "source_records": limited_source_records,
+        "processed_records": processed_records,
+        "summary": summary,
+        "class_distribution": class_distribution,
+        "artifacts": artifacts,
+    }
 
 
 def preprocess_vnwoodknot_for_server(config: Dict[str, Any]) -> Dict[str, Any]:
