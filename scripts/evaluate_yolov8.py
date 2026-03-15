@@ -72,38 +72,42 @@ def main() -> None:
 
     model = YOLO(args.checkpoint)
     image_paths = [str(_resolve_image_path(record, image_root_dir)) for record in records]
-    results = model.predict(
-        source=image_paths,
-        stream=True,
-        imgsz=int(args.imgsz),
-        conf=float(args.score_threshold),
-        iou=float(args.iou_threshold),
-        max_det=int(args.max_detections),
-        device=str(args.device),
-        batch=int(args.batch),
-        verbose=False,
-    )
-
     predictions = []
-    for record, result in zip(records, results):
-        boxes = result.boxes
-        if boxes is None:
-            xyxy = torch.zeros((0, 4), dtype=torch.float32)
-            scores = torch.zeros((0,), dtype=torch.float32)
-            labels = torch.zeros((0,), dtype=torch.int64)
-        else:
-            xyxy = boxes.xyxy.detach().cpu().to(dtype=torch.float32)
-            scores = boxes.conf.detach().cpu().to(dtype=torch.float32)
-            labels = boxes.cls.detach().cpu().to(dtype=torch.int64)
-
-        predictions.append(
-            {
-                "image_id": str(record["image_id"]),
-                "boxes": xyxy,
-                "scores": scores,
-                "labels": labels,
-            }
+    batch_size = max(int(args.batch), 1)
+    for start in range(0, len(records), batch_size):
+        record_batch = records[start:start + batch_size]
+        path_batch = image_paths[start:start + batch_size]
+        results = model.predict(
+            source=path_batch,
+            stream=True,
+            imgsz=int(args.imgsz),
+            conf=float(args.score_threshold),
+            iou=float(args.iou_threshold),
+            max_det=int(args.max_detections),
+            device=str(args.device),
+            batch=len(path_batch),
+            verbose=False,
         )
+
+        for record, result in zip(record_batch, results):
+            boxes = result.boxes
+            if boxes is None:
+                xyxy = torch.zeros((0, 4), dtype=torch.float32)
+                scores = torch.zeros((0,), dtype=torch.float32)
+                labels = torch.zeros((0,), dtype=torch.int64)
+            else:
+                xyxy = boxes.xyxy.detach().cpu().to(dtype=torch.float32)
+                scores = boxes.conf.detach().cpu().to(dtype=torch.float32)
+                labels = boxes.cls.detach().cpu().to(dtype=torch.int64)
+
+            predictions.append(
+                {
+                    "image_id": str(record["image_id"]),
+                    "boxes": xyxy,
+                    "scores": scores,
+                    "labels": labels,
+                }
+            )
 
     targets = build_targets_from_manifest_records(records=records, class_names=class_names)
     metric_payload = compute_detection_metrics(
