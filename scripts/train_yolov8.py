@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train a YOLOv8 baseline on a YOLO-exported dataset."""
+"""Train a YOLOv8 model on a YOLO-exported dataset."""
 
 from __future__ import annotations
 
@@ -18,10 +18,33 @@ from src.utils.logger import setup_logger
 logger = setup_logger()
 
 
+def _resolve_model_reference(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    path = Path(stripped)
+    if path.exists():
+        return str(path.resolve())
+    return stripped
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=str, required=True, help="Path to the exported YOLO dataset.yaml.")
-    parser.add_argument("--weights", type=str, default="yolov8s.pt", help="Ultralytics model weights to start from.")
+    parser.add_argument(
+        "--weights",
+        type=str,
+        default="yolov8s.pt",
+        help="Ultralytics checkpoint used directly, or as pretrained weights when --model-config is set.",
+    )
+    parser.add_argument(
+        "--model-config",
+        type=str,
+        default=None,
+        help="Optional Ultralytics model YAML. When set, training starts from this architecture and loads --weights.",
+    )
     parser.add_argument("--experiment-name", type=str, required=True, help="Experiment name under outputs/yolo.")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--imgsz", type=int, default=1024)
@@ -44,7 +67,17 @@ def main() -> None:
         ) from exc
 
     project_dir = ensure_dir(args.project_dir)
-    model = YOLO(args.weights)
+    model_config = _resolve_model_reference(args.model_config)
+    pretrained_weights = _resolve_model_reference(args.weights)
+    if model_config is not None:
+        model = YOLO(model_config)
+        if pretrained_weights is not None:
+            model = model.load(pretrained_weights)
+    elif pretrained_weights is not None:
+        model = YOLO(pretrained_weights)
+    else:
+        raise ValueError("Either --weights or --model-config must be provided.")
+
     results = model.train(
         data=str(Path(args.data).resolve()),
         epochs=int(args.epochs),
@@ -65,6 +98,8 @@ def main() -> None:
         {
             "experiment_name": args.experiment_name,
             "weights": args.weights,
+            "model_config": model_config,
+            "pretrained_weights": pretrained_weights,
             "epochs": int(args.epochs),
             "imgsz": int(args.imgsz),
             "batch": int(args.batch),
