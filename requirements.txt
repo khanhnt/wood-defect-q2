@@ -13,5 +13,6 @@ torchvision
 torchaudio
 pytest
 thop
+ultralytics
 jupyter
 notebook
