@@ -1,0 +1,8 @@
+experiment_id,experiment_name,role,dataset,metric_source,map50,map50_95,precision50,recall50,small_target_map50_95,status,decision,notes
+Y0-full_7class,y0_yolov8s_full_7class,full-data 7-class in-domain baseline,full_7class,repo_eval,0.769194,0.443244,0.59499,0.892112,0.177602,single_seed_complete,keep,"Needs seeds 43 and 44"
+Y0-3600,y0_yolov8s_vsb7_3600_rarefirst,main screened-benchmark baseline,vsb7_3600_rarefirst,repo_eval,0.800636,0.459727,0.546926,0.884817,0.187469,single_seed_complete,keep,"Needs seeds 43 and 44"
+Y1,y1_yolov8s_p2_vsb7_3600_rarefirst,small-object head ablation,vsb7_3600_rarefirst,repo_eval,0.783515,0.446683,0.50404,0.870855,0.180329,single_seed_complete,negative_result,"Add seeds 43 and 44 if resources allow"
+Y2,y2_yolov8s_wniou_vsb7_3600_rarefirst,loss ablation,vsb7_3600_rarefirst,repo_eval,0.795375,0.450306,0.52554,0.870855,0.181777,single_seed_complete,negative_result,"Add seeds 43 and 44 if resources allow"
+Y6,y6_y0_vnwoodknot_eval,strict zero-shot external transfer,vnwoodknot_full,cross_dataset_repo_eval,0.018672,0.013884,0.084746,0.032258,,single_run_complete,severe_transfer_gap,"Not used to claim robustness"
+Y6a,y6a_y0_vnwoodknot_tiled_raw_eval,matched-tiling zero-shot external transfer,vnwoodknot_tiled,cross_dataset_repo_eval,0.009,0.006248,0.024291,0.013667,,single_run_complete,severe_transfer_gap,"Protocol alignment did not recover transfer"
+Y0m-3600,y0_yolov8m_vsb7_3600_rarefirst,scaling control,vsb7_3600_rarefirst,ultralytics_native_val,0.827,0.489,0.763,0.787,,single_seed_complete,control_only,"Native val only so far; repo eval pending"
