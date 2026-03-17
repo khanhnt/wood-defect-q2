@@ -18,10 +18,34 @@ from src.utils.logger import setup_logger
 logger = setup_logger()
 
 
+def resolve_model_source(model: str | None, weights: str | None) -> str:
+    """Resolve the Ultralytics model source from a friendly model name or direct checkpoint path."""
+    if weights:
+        return str(weights)
+
+    model_name = str(model or "").strip()
+    if not model_name:
+        raise ValueError("Either --model or --weights must be provided.")
+    if model_name.endswith((".pt", ".yaml")):
+        return model_name
+    return f"{model_name}.pt"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=str, required=True, help="Path to the exported YOLO dataset.yaml.")
-    parser.add_argument("--weights", type=str, default="yolov8s.pt", help="Ultralytics model weights to start from.")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="yolov8s",
+        help="Friendly Ultralytics model name such as yolov8s, yolov8m, yolo11s. Ignored when --weights is set.",
+    )
+    parser.add_argument(
+        "--weights",
+        type=str,
+        default=None,
+        help="Optional explicit Ultralytics checkpoint or model yaml. Overrides --model when provided.",
+    )
     parser.add_argument("--experiment-name", type=str, required=True, help="Experiment name under outputs/yolo.")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--imgsz", type=int, default=1024)
@@ -44,7 +68,8 @@ def main() -> None:
         ) from exc
 
     project_dir = ensure_dir(args.project_dir)
-    model = YOLO(args.weights)
+    model_source = resolve_model_source(args.model, args.weights)
+    model = YOLO(model_source)
     results = model.train(
         data=str(Path(args.data).resolve()),
         epochs=int(args.epochs),
@@ -64,7 +89,9 @@ def main() -> None:
     save_json(
         {
             "experiment_name": args.experiment_name,
+            "model": args.model,
             "weights": args.weights,
+            "model_source": model_source,
             "epochs": int(args.epochs),
             "imgsz": int(args.imgsz),
             "batch": int(args.batch),
