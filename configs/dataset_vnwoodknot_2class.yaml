@@ -1,0 +1,6 @@
+dataset_name: vnwoodknot_live_dead_2class
+root_dir: ${WOOD_VN_PROCESSED_ROOT}
+manifest_path: ${WOOD_VN_PROCESSED_ROOT}/benchmarks/vnwoodknot_live_dead_2class/manifest.jsonl
+classes:
+  - live_knot
+  - dead_knot
