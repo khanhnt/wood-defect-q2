@@ -15,20 +15,20 @@ This file locks the paper matrix, records the currently available metrics, and l
 
 ## Scaling Control
 
-| ID | Experiment | Role in paper | Metric source | mAP50 | mAP50_95 | Inference ms/img | Params | GFLOPs | Decision |
+| ID | Experiment | Role in paper | Metric source | mAP50 | mAP50_95 | Small-target mAP50_95 | Inference ms/img | Params | GFLOPs | Decision |
 |---|---|---|---|---:|---:|---:|---:|---:|---|
-| `Y0m-3600` | `y0_yolov8m_vsb7_3600_rarefirst` | detector scaling control | Ultralytics native val | 0.8270 | 0.4890 | 6.7 | 23.2M | 67.4 | keep as control only; do not frame as main method |
+| `Y0m-3600` | `y0_yolov8m_vsb7_3600_rarefirst` | detector scaling control | repo eval | 0.7980 | 0.4539 | 0.1892 | 6.7 | 23.2M | 67.4 | keep as control only; do not frame as main method |
 
 Notes:
-- `Y0m-3600` is **not** in the main matrix because the currently available score is the Ultralytics native validation result, not the repo evaluation summary yet.
+- `Y0m-3600` now has both repo-eval and Ultralytics-native validation outputs. The native-val line was `0.8222 / 0.4876`, so both metric sources tell the same story.
 - The correct reading so far is that scaling from `YOLOv8s` to `YOLOv8m` gives negligible gain relative to the compute increase.
 
 ## Seed Plan
 
 ### Must run
 
-1. `Y0-full_7class`: seeds `42`, `43`, `44`
-2. `Y0-3600`: seeds `42`, `43`, `44`
+1. `Y0-full_7class`: add seeds `43`, `44` to the existing default-seed (`42`) run
+2. `Y0-3600`: add seeds `43`, `44` to the existing default-seed (`42`) run
 
 ### Strongly recommended
 
@@ -72,7 +72,7 @@ python scripts/train_yolov8.py \
   --experiment-name "y0_yolov8s_full_7class_seed${SEED}" \
   --epochs 20 \
   --imgsz 1024 \
-  --batch 16 \
+  --batch 32 \
   --device 0 \
   --seed "${SEED}" \
   --workers 4
@@ -100,7 +100,7 @@ python scripts/train_yolov8.py \
   --experiment-name "y0_yolov8s_vsb7_3600_rarefirst_seed${SEED}" \
   --epochs 20 \
   --imgsz 1024 \
-  --batch 16 \
+  --batch 32 \
   --device 0 \
   --seed "${SEED}" \
   --workers 4
@@ -129,7 +129,7 @@ python scripts/train_yolov8.py \
   --experiment-name "y1_yolov8s_p2_vsb7_3600_rarefirst_seed${SEED}" \
   --epochs 20 \
   --imgsz 1024 \
-  --batch 2 \
+  --batch 16 \
   --device 0 \
   --seed "${SEED}" \
   --workers 4
