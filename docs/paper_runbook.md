@@ -2,13 +2,18 @@
 
 This runbook turns the locked experiment matrix into repeatable commands for the remaining seeds.
 
+Assumption:
+
+- the currently pulled single-run baselines are the default-seed runs (`seed=42` in `scripts/train_yolov8.py`)
+- if you want a fully fresh 3-seed pack, rerun `42` as well; otherwise only add `43` and `44`
+
 ## Environment
 
 ```bash
 export WOOD_MAIN_PROCESSED_ROOT='/storage/tonlh/khanhnt/2026/processed_for_server/main_dataset'
 ```
 
-## 1. `Y0-full_7class` (3 seeds)
+## 1. `Y0-full_7class` (remaining seeds to reach 3)
 
 Branch:
 
@@ -20,7 +25,7 @@ git pull
 Per seed:
 
 ```bash
-export SEED=42
+export SEED=43
 export CUDA_VISIBLE_DEVICES=0
 
 nohup bash -lc "
@@ -30,7 +35,7 @@ python scripts/train_yolov8.py \
   --experiment-name \"y0_yolov8s_full_7class_seed${SEED}\" \
   --epochs 20 \
   --imgsz 1024 \
-  --batch 16 \
+  --batch 32 \
   --device 0 \
   --seed \"${SEED}\" \
   --workers 4
@@ -50,9 +55,9 @@ python scripts/evaluate_yolov8.py \
 " > "y0_yolov8s_full_7class_seed${SEED}.log" 2>&1 &
 ```
 
-Run for `SEED=42`, `43`, `44`.
+Run for `SEED=43`, `44`.
 
-## 2. `Y0-3600` (3 seeds)
+## 2. `Y0-3600` (remaining seeds to reach 3)
 
 Branch:
 
@@ -64,7 +69,7 @@ git pull
 Per seed:
 
 ```bash
-export SEED=42
+export SEED=43
 export CUDA_VISIBLE_DEVICES=0
 
 nohup bash -lc "
@@ -74,7 +79,7 @@ python scripts/train_yolov8.py \
   --experiment-name \"y0_yolov8s_vsb7_3600_rarefirst_seed${SEED}\" \
   --epochs 20 \
   --imgsz 1024 \
-  --batch 16 \
+  --batch 32 \
   --device 0 \
   --seed \"${SEED}\" \
   --workers 4
@@ -94,7 +99,7 @@ python scripts/evaluate_yolov8.py \
 " > "y0_yolov8s_vsb7_3600_rarefirst_seed${SEED}.log" 2>&1 &
 ```
 
-Run for `SEED=42`, `43`, `44`.
+Run for `SEED=43`, `44`.
 
 ## 3. `Y1` (2 extra seeds)
 
@@ -119,7 +124,7 @@ python scripts/train_yolov8.py \
   --experiment-name \"y1_yolov8s_p2_vsb7_3600_rarefirst_seed${SEED}\" \
   --epochs 20 \
   --imgsz 1024 \
-  --batch 2 \
+  --batch 16 \
   --device 0 \
   --seed \"${SEED}\" \
   --workers 4
@@ -190,7 +195,11 @@ python scripts/evaluate_yolov8.py \
 
 Run for `SEED=43`, `44`.
 
-## 5. Aggregation Checklist
+## 5. Optional scaling-control rerun
+
+No additional rerun is required for `Y0m-3600` unless we need a second control seed for rebuttal or supplementary material. The current pulled run is enough to support the statement that simple model scaling does not materially improve the benchmark.
+
+## 6. Aggregation Checklist
 
 After each run, collect:
 
@@ -200,4 +209,5 @@ After each run, collect:
 Then update:
 
 - `outputs/tables/paper_experiment_matrix_current.csv`
+- `docs/paper_experiment_matrix_current.csv`
 - the main paper table with mean ± std for `Y0-full_7class`, `Y0-3600`, `Y1`, and `Y2`
