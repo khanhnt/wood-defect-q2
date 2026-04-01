@@ -1,0 +1,22 @@
+# Main processed dataset configuration for baseline training/evaluation.
+# Set WOOD_MAIN_PROCESSED_ROOT before running train/eval.
+dataset_name: large_scale_wood_surface_defects
+root_dir: ${WOOD_MAIN_PROCESSED_ROOT}
+manifest_path: ${WOOD_MAIN_PROCESSED_ROOT}/manifest.jsonl
+classes:
+  - live_knot
+  - dead_knot
+  - resin
+  - knot_with_crack
+  - crack
+  - marrow
+  - quartzity
+  - knot_missing
+  - blue_stain
+  - overgrown
+small_defect:
+  enabled: true
+  combine: any
+  min_area_ratio: 0.01
+  min_width_px: 16
+  min_height_px: 16

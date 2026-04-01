@@ -1,0 +1,26 @@
+name: wood-defect-q2
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pandas
+  - matplotlib
+  - opencv
+  - pillow
+  - pyyaml
+  - tqdm
+  - scikit-learn
+  - scipy
+  - pytest
+  - jupyter
+  - notebook
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pip:
+      - albumentations
+      - thop
+      - ultralytics

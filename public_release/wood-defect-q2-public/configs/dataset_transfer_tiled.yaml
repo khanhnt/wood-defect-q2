@@ -1,0 +1,17 @@
+dataset_name: vnwoodknot_tiled
+root_dir: ${WOOD_VN_TILED_PROCESSED_ROOT}
+manifest_path: ${WOOD_VN_TILED_PROCESSED_ROOT}/manifest.jsonl
+classes:
+  - live_knot
+  - dead_knot
+  - knot_free
+label_mapping:
+  live_knot: live_knot
+  dead_knot: dead_knot
+  knot_free: null
+small_defect:
+  enabled: true
+  combine: any
+  min_area_ratio: 0.01
+  min_width_px: 16
+  min_height_px: 16

@@ -1,0 +1,21 @@
+# Secondary processed dataset configuration for later external evaluation.
+# Set WOOD_VN_PROCESSED_ROOT before running transfer evaluation.
+dataset_name: vnwoodknot
+root_dir: ${WOOD_VN_PROCESSED_ROOT}
+manifest_path: ${WOOD_VN_PROCESSED_ROOT}/manifest.jsonl
+classes:
+  - live_knot
+  - dead_knot
+  - knot_free
+label_mapping:
+  # Cross-dataset evaluation is overlap-only.
+  # VNWoodKnot classes are mapped into the main-dataset label space below.
+  live_knot: live_knot
+  dead_knot: dead_knot
+  knot_free: null
+small_defect:
+  enabled: true
+  combine: any
+  min_area_ratio: 0.01
+  min_width_px: 16
+  min_height_px: 16

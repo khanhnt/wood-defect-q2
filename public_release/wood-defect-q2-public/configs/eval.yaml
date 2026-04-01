@@ -1,0 +1,41 @@
+seed: 42
+device: cuda
+output_dir: outputs
+experiment_name: baseline_detector_main_eval
+checkpoint_path: outputs/checkpoints/baseline_detector/best.pt
+
+dataset:
+  eval: configs/dataset_main.yaml
+  split: val
+
+dataset_split:
+  seed: 42
+  train_ratio: 0.8
+  val_ratio: 0.1
+
+model:
+  name: baseline_detector
+  num_classes: 10
+  backbone: mobilenet
+  image_size: 1024
+  score_threshold: 0.05
+  nms_threshold: 0.5
+  max_detections: 100
+
+evaluation:
+  batch_size: 1
+  num_workers: 0
+  score_threshold: 0.05
+  compute_small_defect_eval: false
+  tile_merge: false
+  tile_merge_method: wbf
+  tile_merge_iou_threshold: 0.5
+  tile_pre_merge_score_threshold: 0.10
+  tile_post_merge_score_threshold: 0.05
+  tile_edge_margin_px: 32
+  tile_edge_penalty: 0.6
+  tile_max_detections: 100
+  save_predictions: false
+  save_visualizations: false
+  compute_per_class_ap: true
+  compute_cross_dataset: false

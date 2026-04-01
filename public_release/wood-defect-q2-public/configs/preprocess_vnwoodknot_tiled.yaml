@@ -1,0 +1,32 @@
+# Tiled preprocessing config for VNWoodKnot external evaluation under a matched tiling protocol.
+dataset_name: vnwoodknot_tiled
+root_dir: ""
+processed_root_dir: ""
+repo_output_dir: outputs/tables
+jpeg_quality: 97
+classes:
+  - live_knot
+  - dead_knot
+  - knot_free
+source_category_map:
+  "0": knot_free
+  "1": live_knot
+  "2": dead_knot
+yolo_class_map:
+  "0": live_knot
+  "1": dead_knot
+splits:
+  - train
+  - validation
+  - test
+split:
+  seed: 42
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+tile:
+  enabled: true
+  size: 1024
+  overlap: 128
+  min_box_visibility: 0.5
+  keep_all_negative_tiles: true
