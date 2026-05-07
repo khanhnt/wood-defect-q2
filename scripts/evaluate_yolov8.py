@@ -27,7 +27,7 @@ from src.engine.prediction_eval import (
 )
 from src.metrics.detection_metrics import compute_detection_metrics
 from src.utils.config import load_yaml
-from src.utils.io import save_csv
+from src.utils.io import save_csv, save_jsonl
 from src.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -60,6 +60,11 @@ def parse_args() -> argparse.Namespace:
         help="Label shown for the in-domain row in cross-dataset comparison exports.",
     )
     parser.add_argument("--output-dir", type=str, default="outputs")
+    parser.add_argument(
+        "--save-predictions",
+        action="store_true",
+        help="Export per-image predictions to outputs/tables/*_predictions.jsonl for qualitative review.",
+    )
     return parser.parse_args()
 
 
@@ -77,6 +82,15 @@ def _extract_model_class_names(model: object) -> list[str]:
     if isinstance(names, (list, tuple)):
         return [str(name) for name in names]
     return []
+
+
+def _prediction_to_serializable(prediction: dict) -> dict:
+    return {
+        "image_id": prediction["image_id"],
+        "boxes": torch.as_tensor(prediction["boxes"]).cpu().tolist(),
+        "labels": torch.as_tensor(prediction["labels"]).cpu().tolist(),
+        "scores": torch.as_tensor(prediction["scores"]).cpu().tolist(),
+    }
 
 
 def _build_cross_dataset_summary(
@@ -305,6 +319,9 @@ def main() -> None:
         per_class=metric_payload["per_class"],
         small_defect_eval_payload=small_payload,
     )
+    if bool(args.save_predictions):
+        predictions_path = Path(args.output_dir) / "tables" / f"{args.experiment_name}_{args.split}_predictions.jsonl"
+        save_jsonl([_prediction_to_serializable(prediction) for prediction in predictions], predictions_path)
     if mapping_report is not None:
         _export_cross_dataset_reports(
             output_dir=args.output_dir,

@@ -1,0 +1,307 @@
+\begin{thebibliography}{38}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Hwang and Sugiyama(2021)]{hwang_sugiyama_review}
+Sung-Wook Hwang and Junji Sugiyama.
+\newblock Computer vision-based wood identification and its expansion and
+  contribution potentials in wood science: A review.
+\newblock \emph{Plant Methods}, 17:\penalty0 47, 2021.
+\newblock \doi{10.1186/s13007-021-00746-1}.
+
+\bibitem[Rosa~da Silva et~al.(2017)Rosa~da Silva, De~Ridder, Baetens, Van~den
+  Bulcke, Rousseau, Martinez~Bruno, Beeckman, Van~Acker, and
+  De~Baets]{da_silva_2017}
+N.~Rosa~da Silva, M.~De~Ridder, J.~M. Baetens, J.~Van~den Bulcke, M.~Rousseau,
+  O.~Martinez~Bruno, H.~Beeckman, J.~Van~Acker, and B.~De~Baets.
+\newblock Automated classification of wood transverse cross-section
+  micro-imagery from 77 commercial central-african timber species.
+\newblock \emph{Annals of Forest Science}, 74:\penalty0 1--14, 2017.
+
+\bibitem[Souza et~al.(2020)Souza, Santos, Vieira, Naide, Nisgoski, and
+  Oliveira]{souza_2020}
+D.~V. Souza, J.~X. Santos, H.~C. Vieira, T.~L. Naide, S.~Nisgoski, and L.~E.~S.
+  Oliveira.
+\newblock An automatic recognition system of brazilian flora species based on
+  textural features of macroscopic images of wood.
+\newblock \emph{Wood Science and Technology}, 54\penalty0 (4):\penalty0
+  1065--1090, 2020.
+
+\bibitem[de~Geus et~al.(2021)de~Geus, Backes, Gontijo, Albuquerque, and
+  Souza]{de_geus_2021}
+A.~R. de~Geus, A.~R. Backes, A.~B. Gontijo, G.~H. Albuquerque, and J.~R. Souza.
+\newblock Amazon wood species classification: A comparison between deep
+  learning and pre-designed features.
+\newblock \emph{Wood Science and Technology}, 55:\penalty0 857--872, 2021.
+
+\bibitem[K{\i}rba{\c s} and {\c C}if{\c c}i(2022)]{kirbas_2022}
+Ismail K{\i}rba{\c s} and Ahmet {\c C}if{\c c}i.
+\newblock An effective and fast solution for classification of wood species: A
+  deep transfer learning approach.
+\newblock \emph{Ecological Informatics}, 69:\penalty0 101633, 2022.
+\newblock \doi{10.1016/j.ecoinf.2022.101633}.
+
+\bibitem[He et~al.(2021)He, Mu, Zhou, and Hu]{he_2021_woodresearch}
+Tianxiang He, Sheng Mu, Haifeng Zhou, and Jian Hu.
+\newblock Wood species identification based on an ensemble of deep convolution
+  neural networks.
+\newblock \emph{Wood Research}, 2021.
+
+\bibitem[Herrera-Poyatos et~al.(2024)Herrera-Poyatos, Herrera-Poyatos, Montes,
+  de~Palacios, Esteban, Garc{\'i}a~Iruela, Garc{\'i}a~Fern{\'a}ndez, and
+  Herrera]{herrera_poyatos_2024}
+David Herrera-Poyatos, Andr{\'e}s Herrera-Poyatos, Rosana Montes, Paloma
+  de~Palacios, Luis~G. Esteban, Alberto Garc{\'i}a~Iruela, Francisco
+  Garc{\'i}a~Fern{\'a}ndez, and Francisco Herrera.
+\newblock Deep learning methodology for the identification of wood species
+  using high-resolution macroscopic images.
+\newblock In \emph{2024 International Joint Conference on Neural Networks},
+  pages 1--8, 2024.
+\newblock \doi{10.1109/IJCNN60899.2024.10650590}.
+
+\bibitem[Kodytek et~al.(2022)Kodytek, Bodzas, and Bilik]{kodytek_dataset}
+Pavel Kodytek, Alexandra Bodzas, and Petr Bilik.
+\newblock A large-scale image dataset of wood surface defects for automated
+  vision-based quality control processes.
+\newblock \emph{F1000Research}, 10:\penalty0 581, 2022.
+\newblock \doi{10.12688/f1000research.52903.2}.
+\newblock Version 2; first published 2021.
+
+\bibitem[Wang et~al.(2023)Wang, Liang, Wang, and Mou]{odca_yolo}
+Rijun Wang, Fulong Liang, Bo~Wang, and Xiangwei Mou.
+\newblock Odca-yolo: An omni-dynamic convolution coordinate attention-based
+  yolo for wood defect detection.
+\newblock \emph{Forests}, 14\penalty0 (9):\penalty0 1885, 2023.
+\newblock \doi{10.3390/f14091885}.
+
+\bibitem[Wang et~al.(2024{\natexlab{a}})Wang, Chen, Liang, Wang, Mou, and
+  Zhang]{bpn_yolo}
+Rijun Wang, Yesheng Chen, Fulong Liang, Bo~Wang, Xiangwei Mou, and Guanghao
+  Zhang.
+\newblock Bpn-yolo: A novel method for wood defect detection based on yolov7.
+\newblock \emph{Forests}, 15\penalty0 (7):\penalty0 1096, 2024{\natexlab{a}}.
+\newblock \doi{10.3390/f15071096}.
+
+\bibitem[Xi et~al.(2024)Xi, Wang, Liang, Chen, Zhang, and Wang]{sim_yolo}
+Honglei Xi, Rijun Wang, Fulong Liang, Yesheng Chen, Guanghao Zhang, and
+  Bo~Wang.
+\newblock Sim-yolo: A wood surface defect detection method based on the
+  improved yolov8.
+\newblock \emph{Coatings}, 14\penalty0 (8):\penalty0 1001, 2024.
+\newblock \doi{10.3390/coatings14081001}.
+
+\bibitem[Lema et~al.(2025)Lema, S{\'a}nchez-Gonz{\'a}lez, Usamentiaga, and
+  delaCalle]{fdd_yolo}
+Dar{\'i}o~G. Lema, Lidia S{\'a}nchez-Gonz{\'a}lez, Rub{\'e}n Usamentiaga, and
+  Francisco~J. delaCalle.
+\newblock Benchmarking deep learning models for surface defect detection: a
+  reproducible and statistically-rigorous approach.
+\newblock \emph{Journal of Intelligent Manufacturing}, 2025.
+
+\bibitem[An et~al.(2024)An, Liang, Qin, Huang, Xiong, and Zeng]{an_cwb_yolov8}
+Hao An, Zhihong Liang, Mingming Qin, Yuxiang Huang, Fei Xiong, and Guojian
+  Zeng.
+\newblock Wood defect detection based on the cwb-yolov8 algorithm.
+\newblock \emph{Journal of Wood Science}, 70:\penalty0 26, 2024.
+\newblock \doi{10.1186/s10086-024-02139-z}.
+
+\bibitem[Kili{\c c} et~al.(2024)Kili{\c c}, {\"O}zcan, Kili{\c c}, and Do{\u
+  g}ru]{kilic_2024}
+Kenan Kili{\c c}, U{\u g}ur {\"O}zcan, Kaz{\i}m Kili{\c c}, and
+  {\.I}brahim~Alper Do{\u g}ru.
+\newblock Using deep learning techniques for anomaly detection of wood surface.
+\newblock \emph{Drvna Industrija}, 75\penalty0 (3):\penalty0 275--286, 2024.
+\newblock \doi{10.5552/drvind.2024.0114}.
+
+\bibitem[K{\i}l{\i}{\c c} et~al.(2025)K{\i}l{\i}{\c c}, K{\i}l{\i}{\c c}, Do{\u
+  g}ru, and {\"O}zcan]{kilic_2025_wd_detector}
+Kenan K{\i}l{\i}{\c c}, Kaz{\i}m K{\i}l{\i}{\c c}, {\.I}brahim~Alper Do{\u
+  g}ru, and U{\u g}ur {\"O}zcan.
+\newblock Wd detector: Deep learning-based hybrid sensor design for wood defect
+  detection.
+\newblock \emph{European Journal of Wood and Wood Products}, 83:\penalty0 50,
+  2025.
+\newblock \doi{10.1007/s00107-025-02211-5}.
+
+\bibitem[Hoang et~al.(2025)Hoang, Le, Dinh, Tran-Trung, Van, Thi~Hong, and
+  Ho~Huong]{cmc_wood_area_attention}
+Vinh~Truong Hoang, Viet-Tuan Le, Nghia Dinh, Kiet Tran-Trung, Bay~Nguyen Van,
+  Ha~Duong Thi~Hong, and Thien Ho~Huong.
+\newblock Deep learning-based faulty wood detection with area attention.
+\newblock \emph{Computers, Materials \& Continua}, 85\penalty0 (1):\penalty0
+  1495--1514, 2025.
+\newblock \doi{10.32604/cmc.2025.066506}.
+
+\bibitem[Lu et~al.(2024)Lu, Jiang, Ma, Li, and Liu]{cmc_insulator_small}
+Xiao Lu, Chengling Jiang, Zhoujun Ma, Haitao Li, and Yuexin Liu.
+\newblock A simple and effective surface defect detection method of power line
+  insulators for difficult small objects.
+\newblock \emph{Computers, Materials \& Continua}, 79\penalty0 (1):\penalty0
+  373--390, 2024.
+\newblock \doi{10.32604/cmc.2024.047469}.
+
+\bibitem[Khan et~al.(2024)Khan, Shah, Khan, and Tahir]{cmc_pcb_yolov8}
+R.~U. Khan, F.~Shah, A.~A. Khan, and H.~Tahir.
+\newblock Advancing pcb quality control: Harnessing yolov8 deep learning for
+  real-time fault detection.
+\newblock \emph{Computers, Materials \& Continua}, 81\penalty0 (1):\penalty0
+  345--367, 2024.
+\newblock \doi{10.32604/cmc.2024.054439}.
+
+\bibitem[Zhao et~al.(2026)Zhao, Li, Wei, Wang, and Zhao]{cmc_cg_yolov8}
+Shengran Zhao, Zhensong Li, Xiaotan Wei, Yutong Wang, and Kai Zhao.
+\newblock Lightweight small defect detection with yolov8 using cascaded
+  multi-receptive fields and enhanced detection heads.
+\newblock \emph{Computers, Materials \& Continua}, 86\penalty0 (1):\penalty0
+  1--14, 2026.
+\newblock \doi{10.32604/cmc.2025.068138}.
+
+\bibitem[Min et~al.(2023)Min, Li, and Li]{cmc_rail_upernet}
+Yu~Min, Jing Li, and Yang Li.
+\newblock Rail surface defect detection based on improved upernet and connected
+  component analysis.
+\newblock \emph{Computers, Materials \& Continua}, 77\penalty0 (1):\penalty0
+  941--962, 2023.
+\newblock \doi{10.32604/cmc.2023.041182}.
+
+\bibitem[Wang et~al.(2024{\natexlab{b}})Wang, Huang, Dipu, Zhao, Gao, Zhang,
+  and Lv]{cmc_yolo_rlc}
+Yuanyuan Wang, Jialong Huang, Md~Sharid~Kayes Dipu, Hu~Zhao, Shangbing Gao,
+  Haiyan Zhang, and Pinrong Lv.
+\newblock Yolo-rlc: An advanced target-detection algorithm for surface defects
+  of printed circuit boards based on yolov5.
+\newblock \emph{Computers, Materials \& Continua}, 80\penalty0 (3):\penalty0
+  4973--4995, 2024{\natexlab{b}}.
+\newblock \doi{10.32604/cmc.2024.055839}.
+
+\bibitem[Ayon et~al.(2025)Ayon, Siraj, and Uddin]{cmc_lmvit}
+Syed Tasnimul~Karim Ayon, Farhan~Md. Siraj, and Jia Uddin.
+\newblock Steel surface defect detection using learnable memory vision
+  transformer.
+\newblock \emph{Computers, Materials \& Continua}, 82\penalty0 (1):\penalty0
+  499--520, 2025.
+\newblock \doi{10.32604/cmc.2025.058361}.
+
+\bibitem[Wang et~al.(2026)Wang, Zhu, Chen, Yin, and Su]{cmc_msese}
+Yuanyuan Wang, Yemeng Zhu, Xiuchuan Chen, Tongtong Yin, and Shiwei Su.
+\newblock Steel surface defect detection via the multiscale edge enhancement
+  method.
+\newblock \emph{Computers, Materials \& Continua}, 86\penalty0 (3), 2026.
+\newblock \doi{10.32604/cmc.2025.072404}.
+
+\bibitem[Wang et~al.(2025)Wang, Xue, Zhang, Xiao, Wei, and Chen]{cmc_flame}
+Jie Wang, Jun Xue, Hao Zhang, Hao Xiao, Hong Wei, and Min Chen.
+\newblock An optimized unsupervised defect detection approach via federated
+  learning and adaptive embeddings knowledge distillation.
+\newblock \emph{Computers, Materials \& Continua}, 84\penalty0 (1):\penalty0
+  1839--1861, 2025.
+\newblock \doi{10.32604/cmc.2025.064489}.
+
+\bibitem[Yasir and Ahn(2023)]{cmc_channel_shuffle}
+Siddiqui~Muhammad Yasir and Hyunsik Ahn.
+\newblock Faster metallic surface defect detection using deep learning with
+  channel shuffling.
+\newblock \emph{Computers, Materials \& Continua}, 75\penalty0 (1):\penalty0
+  1847--1861, 2023.
+\newblock \doi{10.32604/cmc.2023.035698}.
+
+\bibitem[Tran et~al.(2025)Tran, Lam, and Le]{TRAN2025112039}
+Vinh Tran, Duy Lam, and Tuong Le.
+\newblock Vnwoodknot: A benchmark image dataset for wood knot detection and
+  classification.
+\newblock \emph{Data in Brief}, 62:\penalty0 112039, 2025.
+\newblock ISSN 2352-3409.
+\newblock \doi{https://doi.org/10.1016/j.dib.2025.112039}.
+\newblock URL
+  \url{https://www.sciencedirect.com/science/article/pii/S2352340925007619}.
+
+\bibitem[Mittal(2024)]{mittal_2024}
+Payal Mittal.
+\newblock A comprehensive survey of deep learning-based lightweight object
+  detection models for edge devices.
+\newblock \emph{Artificial Intelligence Review}, 57:\penalty0 242, 2024.
+\newblock \doi{10.1007/s10462-024-10877-1}.
+
+\bibitem[Ma et~al.(2024)Ma, Yin, Huang, and Li]{ma_2024_air}
+Yuxin Ma, Jiaxing Yin, Feng Huang, and Qipeng Li.
+\newblock Surface defect inspection of industrial products with object
+  detection deep networks: A systematic review.
+\newblock \emph{Artificial Intelligence Review}, 57:\penalty0 333, 2024.
+\newblock \doi{10.1007/s10462-024-10956-3}.
+
+\bibitem[Fang et~al.(2025)Fang, Wang, Sun, Chen, and Shi]{wang_2025_ieeeaccess}
+Wei Fang, Mengnan Wang, Jiadong Sun, Deji Chen, and Pei Shi.
+\newblock Review of surface-defect detection methods for industrial products
+  based on machine vision.
+\newblock \emph{IEEE Access}, 13:\penalty0 90668--90697, 2025.
+\newblock \doi{10.1109/ACCESS.2025.3571297}.
+
+\bibitem[Ren et~al.(2015)Ren, He, Girshick, and Sun]{faster_rcnn}
+Shaoqing Ren, Kaiming He, Ross Girshick, and Jian Sun.
+\newblock Faster {R-CNN}: Towards real-time object detection with region
+  proposal networks.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2015.
+
+\bibitem[Howard et~al.(2019)Howard, Sandler, Chu, Chen, Chen, Tan, Wang, Zhu,
+  Pang, Vasudevan, Le, and Adam]{mobilenetv3}
+Andrew Howard, Mark Sandler, Grace Chu, Liang-Chieh Chen, Bo~Chen, Mingxing
+  Tan, Weijun Wang, Yukun Zhu, Ruoming Pang, Vijay Vasudevan, Quoc Le, and
+  Hartwig Adam.
+\newblock Searching for {MobileNetV3}.
+\newblock In \emph{Proceedings of the IEEE/CVF International Conference on
+  Computer Vision}, 2019.
+
+\bibitem[Qiu and Ni(2025)]{cmc_aluminum_yolov8n}
+Hao Qiu and Shoudong Ni.
+\newblock An improved aluminum surface defect detection algorithm based on
+  yolov8n.
+\newblock \emph{Computers, Materials \& Continua}, 84\penalty0 (2):\penalty0
+  2677--2697, 2025.
+\newblock \doi{10.32604/cmc.2025.064629}.
+
+\bibitem[Xu et~al.(2022)Xu, Wang, Qiao, Duan, Zhang, and
+  Chen]{cmc_printed_positive}
+Zihao Xu, Hongyuan Wang, Pengyu Qiao, Weidong Duan, Ji~Zhang, and Fuhua Chen.
+\newblock Printed surface defect detection model based on positive samples.
+\newblock \emph{Computers, Materials \& Continua}, 72\penalty0 (3):\penalty0
+  5925--5938, 2022.
+\newblock \doi{10.32604/cmc.2022.026943}.
+
+\bibitem[Wei et~al.(2024)Wei, Cheng, He, and Zhu]{wei_2024_smallreview}
+Wei Wei, Yu~Cheng, Jiafeng He, and Xiyue Zhu.
+\newblock A review of small object detection based on deep learning.
+\newblock \emph{Neural Computing and Applications}, 36\penalty0 (12):\penalty0
+  6283--6303, 2024.
+\newblock \doi{10.1007/s00521-024-09422-6}.
+
+\bibitem[Hua and Chen(2025)]{hua_2025_smallsurvey}
+Wei Hua and Qili Chen.
+\newblock A survey of small object detection based on deep learning in aerial
+  images.
+\newblock \emph{Artificial Intelligence Review}, 58:\penalty0 162, 2025.
+\newblock \doi{10.1007/s10462-025-11150-9}.
+
+\bibitem[Tong et~al.(2023)Tong, Chen, Xu, and Yu]{tong_2023_wiseiou}
+Zanjia Tong, Yuhang Chen, Zewei Xu, and Rong Yu.
+\newblock Wise-iou: Bounding box regression loss with dynamic focusing
+  mechanism.
+\newblock \emph{arXiv preprint arXiv:2301.10051}, 2023.
+\newblock URL \url{https://arxiv.org/abs/2301.10051}.
+
+\bibitem[Wang et~al.(2022)Wang, Xu, Yang, and Yu]{wang_2021_nwd}
+Jinwang Wang, Chang Xu, Wen Yang, and Lei Yu.
+\newblock A normalized gaussian wasserstein distance for tiny object detection.
+\newblock \emph{arXiv preprint arXiv:2110.13389}, 2022.
+\newblock URL \url{https://arxiv.org/abs/2110.13389}.
+
+\bibitem[Zheng et~al.(2019)Zheng, Wang, Liu, Li, Ye, and Ren]{zheng_2020_diou}
+Zhaohui Zheng, Ping Wang, Wei Liu, Jinze Li, Rongguang Ye, and Dongwei Ren.
+\newblock Distance-iou loss: Faster and better learning for bounding box
+  regression.
+\newblock \emph{arXiv preprint arXiv:1911.08287}, 2019.
+\newblock URL \url{https://arxiv.org/abs/1911.08287}.
+
+\end{thebibliography}
