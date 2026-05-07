@@ -53,6 +53,12 @@ class MatchStats:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=str, required=True, help="VNWoodKnot manifest JSONL.")
+    parser.add_argument(
+        "--image-root-dir",
+        type=str,
+        default=None,
+        help="Optional image root used when manifest image paths are relative or need remapping.",
+    )
     parser.add_argument("--output-dir", type=str, required=True, help="Output directory for figure artifacts.")
     parser.add_argument("--split", type=str, default="test", help="Preferred split. Default: test.")
     parser.add_argument("--rows", type=int, default=4, help="Number of selected examples. Default: 4.")
@@ -116,10 +122,12 @@ def _normalize_split_name(split: str | None) -> str | None:
     return "val" if split == "validation" else split
 
 
-def _resolve_image_path(record: Mapping[str, Any], manifest_path: Path) -> Path:
+def _resolve_image_path(record: Mapping[str, Any], manifest_path: Path, image_root_dir: Path | None = None) -> Path:
     image_path = Path(str(record.get("image_path") or ""))
     candidates = [image_path]
     if not image_path.is_absolute():
+        if image_root_dir is not None:
+            candidates.append(image_root_dir / image_path)
         candidates.append(manifest_path.parent / image_path)
     for candidate in candidates:
         if candidate.exists():
@@ -444,7 +452,10 @@ def _draw_entries(image: Image.Image, entries: Sequence[BoxEntry], crop: tuple[f
 
 
 def _render_panel(record: Mapping[str, Any], entries: Sequence[BoxEntry], reference_boxes: Sequence[BoxEntry], panel_width: int, panel_height: int, show_scores: bool) -> Image.Image:
-    image = Image.open(_resolve_image_path(record, manifest_path)).convert("RGB")
+    resolved_image_path = record.get("_resolved_image_path")
+    if not resolved_image_path:
+        raise KeyError("Record is missing _resolved_image_path required for rendering.")
+    image = Image.open(Path(str(resolved_image_path))).convert("RGB")
     crop = _expanded_crop(reference_boxes, image.width, image.height, panel_width / panel_height)
     left, top, right, bottom = crop
     cropped = image.crop((int(left), int(top), int(math.ceil(right)), int(math.ceil(bottom))))
@@ -538,9 +549,15 @@ def _write_manifest(rows: list[dict[str, Any]], models: list[ModelSpec], output_
 def main() -> None:
     args = parse_args()
     manifest_path = Path(args.manifest)
+    image_root_dir = Path(args.image_root_dir) if args.image_root_dir else None
     output_dir = Path(args.output_dir)
     records = _load_records(manifest_path, split=args.split)
-    records_by_id = {str(record["image_id"]): record for record in records}
+    records_with_paths = []
+    for record in records:
+        record_copy = dict(record)
+        record_copy["_resolved_image_path"] = str(_resolve_image_path(record_copy, manifest_path, image_root_dir))
+        records_with_paths.append(record_copy)
+    records_by_id = {str(record["image_id"]): record for record in records_with_paths}
 
     models = [
         ModelSpec("gt", "Ground truth", "ground_truth", manifest_path),
