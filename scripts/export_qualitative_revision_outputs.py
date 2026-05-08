@@ -62,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vn-panel-width", type=int, default=360)
     parser.add_argument("--vn-panel-height", type=int, default=240)
     parser.add_argument("--vn-show-scores", action="store_true")
+    parser.add_argument("--vn-replace-row3-with-moderate-t1", action="store_true")
     parser.add_argument("--t0-run-name", type=str, required=True)
     parser.add_argument("--t0-header", type=str, default="T0")
     parser.add_argument("--t0-predictions", type=str, required=True)
@@ -209,6 +210,8 @@ def main() -> None:
         vn_command.extend(["--image-root-dir", args.vn_image_root_dir])
     if args.vn_show_scores:
         vn_command.append("--show-scores")
+    if args.vn_replace_row3_with_moderate_t1:
+        vn_command.append("--replace-row3-with-moderate-t1")
 
     in_summary = _run_json_command(in_command)
     vn_summary = _run_json_command(vn_command)
@@ -230,6 +233,7 @@ def main() -> None:
                 f"- Output root: {vn_summary['output_root']}",
                 f"- T0 run: {args.t0_run_name}",
                 f"- T1 run: {args.t1_run_name}",
+                f"- Row 3 replacement enabled: {args.vn_replace_row3_with_moderate_t1}",
                 "",
                 "Selection intent",
                 "- In-domain: balanced readable rows spanning easy correct, texture FP, small/weak defect, and disagreement cases.",

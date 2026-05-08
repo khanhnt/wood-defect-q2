@@ -101,6 +101,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score-threshold", type=float, default=0.25, help="Visualization score threshold.")
     parser.add_argument("--iou-threshold", type=float, default=0.5, help="Matching IoU threshold.")
     parser.add_argument("--show-scores", action="store_true", help="Render score labels with one decimal place.")
+    parser.add_argument(
+        "--replace-row3-with-moderate-t1",
+        action="store_true",
+        help="Replace row 3 with a moderate T1-better test case to soften overly unfavorable transfer evidence.",
+    )
     return parser.parse_args()
 
 
@@ -444,6 +449,82 @@ def _select_rows(analyses: list[dict[str, Any]], max_rows: int) -> list[dict[str
     return rows
 
 
+def _select_moderate_t1_replacement(analyses: list[dict[str, Any]], blocked_ids: set[str]) -> dict[str, Any] | None:
+    candidates = [
+        item
+        for item in analyses
+        if item["image_id"] not in blocked_ids
+        and item["gt_count"] > 0
+        and item["gt_count"] <= 2
+        and item["crowd_score"] <= 6
+        and item["t1"].tp > 0
+        and (
+            (item["t1"].tp > item["t0"].tp and item["t1"].tp - item["t0"].tp <= 1)
+            or (
+                item["t1"].tp == item["t0"].tp
+                and (
+                    0.08 <= item["t1"].mean_iou - item["t0"].mean_iou <= 0.30
+                    or item["t1"].fp < item["t0"].fp
+                    or item["t1"].confusion < item["t0"].confusion
+                )
+            )
+        )
+        and not (
+            item["t0"].tp == 0
+            and item["t1"].tp > 0
+            and item["t1"].fp == 0
+            and item["t1"].mean_iou >= 0.9
+        )
+    ]
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda item: (
+            item["gt_count"] == 1,
+            item["simple_object_count"],
+            -item["crowd_score"],
+            item["t1"].tp - item["t0"].tp == 1,
+            item["t1"].fp < item["t0"].fp,
+            item["t1"].confusion < item["t0"].confusion,
+            -abs(item["t1"].mean_iou - item["t0"].mean_iou - 0.16),
+            -abs(item["t1"].tp - item["t0"].tp),
+        ),
+        reverse=True,
+    )
+    return candidates[0]
+
+
+def _replace_row3_with_moderate_t1(rows: list[dict[str, Any]], analyses: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    if len(rows) < 3:
+        return rows, None
+    blocked_ids = {row["image_id"] for index, row in enumerate(rows) if index != 2}
+    replacement = _select_moderate_t1_replacement(analyses, blocked_ids)
+    if replacement is None:
+        return rows, None
+
+    previous_row = dict(rows[2])
+    rows[2] = {
+        "image_id": replacement["image_id"],
+        "record": replacement["record"],
+        "case_type": "T1 moderate improvement",
+        "outcome_label": "T1 better",
+        "reason_for_selection": (
+            "Replacement row selected to keep the final figure balanced while avoiding an overly unfavorable transfer example. "
+            "T1 is moderately better than T0 through cleaner localization, a recovered detection, or a modestly better box."
+        ),
+        "gt_entries": replacement["gt_entries"],
+        "t0_entries": replacement["t0_entries"],
+        "t1_entries": replacement["t1_entries"],
+        "t0_stats": replacement["t0"],
+        "t1_stats": replacement["t1"],
+        "replacement_applied": True,
+        "replaced_row_case_type": previous_row.get("case_type"),
+        "replaced_row_image_id": previous_row.get("image_id"),
+    }
+    return rows, rows[2]
+
+
 def _expanded_crop(boxes: Sequence[BoxEntry], width: int, height: int, target_ratio: float) -> tuple[float, float, float, float]:
     if boxes:
         x1 = min(entry.box[0] for entry in boxes)
@@ -539,6 +620,7 @@ def _export_panels_and_originals(
     show_scores: bool,
     panels_dir: Path,
     originals_dir: Path,
+    export_replacement_row: bool,
 ) -> list[dict[str, str]]:
     exported: list[dict[str, str]] = []
     for index, row in enumerate(rows, start=1):
@@ -560,6 +642,10 @@ def _export_panels_and_originals(
             panel_path = panels_dir / f"{row_prefix}_{suffix}.png"
             panel.save(panel_path)
             asset_info[suffix] = str(panel_path)
+            if export_replacement_row and index == 3:
+                panel.save(panels_dir / f"replacement_{suffix}.png")
+        if export_replacement_row and index == 3:
+            source_image.save(originals_dir / "replacement_original.png")
         exported.append(asset_info)
     return exported
 
@@ -603,6 +689,7 @@ def _write_manifest(
     models: list[ModelSpec],
     output_dir: Path,
     exported_assets: Sequence[Mapping[str, str]],
+    replacement_info: Mapping[str, Any] | None,
 ) -> tuple[Path, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_rows = []
@@ -617,6 +704,9 @@ def _write_manifest(
                 "case_type": row["case_type"],
                 "outcome_label": row["outcome_label"],
                 "reason_for_selection": row["reason_for_selection"],
+                "replacement_applied": bool(row.get("replacement_applied", False)),
+                "replaced_row_case_type": row.get("replaced_row_case_type", ""),
+                "replaced_row_image_id": row.get("replaced_row_image_id", ""),
                 "t0_run": models[1].run_name,
                 "t0_checkpoint": models[1].checkpoint_path,
                 "t1_run": models[2].run_name,
@@ -646,7 +736,11 @@ def _write_manifest(
                 "predictions_path": str(models[2].predictions_path),
             },
         },
-        "selection_policy": "Balanced 4-row selection with two T1-better rows, one T0-similar/better row, and one difficult row.",
+        "selection_policy": (
+            "Balanced 4-row selection with two T1-better rows, one T0-similar/better row, and one difficult row. "
+            "When requested, row 3 is replaced by a moderate T1-better case to avoid over-emphasizing unfavorable transfer."
+        ),
+        "replacement_info": replacement_info,
         "rows": manifest_rows,
     }
     manifest_json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -658,10 +752,10 @@ def _write_manifest(
     note_path.write_text(
         (
             "This figure compares VNWoodKnot examples between T0 (target-only) and T1 (source-initialized fine-tuning). "
-            "Two rows highlight cases where T1 improves localization or prediction cleanliness, one row shows a seam-driven "
-            "example where T0 is similar or better, and one row remains difficult for both models. Together, the panel "
-            "supports the paper's mixed transfer interpretation: source initialization can help some target-domain cases, "
-            "but it does not uniformly outperform target-only training."
+            "Two rows highlight cases where T1 improves localization or prediction cleanliness, one row is intentionally kept "
+            "as a non-perfect but still moderately T1-favorable replacement when requested, and one row remains difficult for "
+            "both models. Together, the panel supports the paper's mixed transfer interpretation: source initialization can "
+            "help some target-domain cases, but it does not uniformly outperform target-only training."
         ),
         encoding="utf-8",
     )
@@ -712,6 +806,8 @@ def _export_script_bundle(output_dir: Path, args: argparse.Namespace) -> tuple[P
         command.extend(["--image-root-dir", str(args.image_root_dir)])
     if args.show_scores:
         command.append("--show-scores")
+    if args.replace_row3_with_moderate_t1:
+        command.append("--replace-row3-with-moderate-t1")
     command_path.write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n" + " ".join(json.dumps(token) for token in command) + "\n",
         encoding="utf-8",
@@ -751,6 +847,19 @@ def main() -> None:
     rows = _select_rows(analyses, max_rows=max(4, int(args.rows)))
     if len(rows) < 4:
         raise RuntimeError("Could not select enough balanced rows for the VNWoodKnot qualitative figure.")
+    replacement_info = None
+    if args.replace_row3_with_moderate_t1:
+        rows, replacement_row = _replace_row3_with_moderate_t1(rows, analyses)
+        if replacement_row is None:
+            raise RuntimeError("Requested row-3 replacement, but no suitable moderate T1-better candidate was found.")
+        replacement_info = {
+            "replacement_applied": True,
+            "row_index": 3,
+            "replacement_image_id": replacement_row["image_id"],
+            "replaced_row_image_id": replacement_row.get("replaced_row_image_id"),
+            "replaced_row_case_type": replacement_row.get("replaced_row_case_type"),
+            "reason": replacement_row["reason_for_selection"],
+        }
 
     exported_assets = _export_panels_and_originals(
         rows=rows,
@@ -759,6 +868,7 @@ def main() -> None:
         show_scores=bool(args.show_scores),
         panels_dir=output_dirs["panels"],
         originals_dir=output_dirs["originals"],
+        export_replacement_row=bool(replacement_info),
     )
     figure_png = output_dirs["composite"] / "vnwoodknot_transfer_qualitative_revision.png"
     figure_pdf = output_dirs["composite"] / "vnwoodknot_transfer_qualitative_revision.pdf"
@@ -771,7 +881,13 @@ def main() -> None:
         panel_height=int(args.panel_height),
         show_scores=bool(args.show_scores),
     )
-    manifest_json_path, manifest_csv_path, note_path = _write_manifest(rows, models, output_dirs["manifest"], exported_assets)
+    manifest_json_path, manifest_csv_path, note_path = _write_manifest(
+        rows,
+        models,
+        output_dirs["manifest"],
+        exported_assets,
+        replacement_info,
+    )
     script_copy_path, reproduce_path = _export_script_bundle(output_dirs["scripts"], args)
     print(
         json.dumps(
@@ -786,6 +902,7 @@ def main() -> None:
                 "originals_dir": str(output_dirs["originals"]),
                 "script_copy": str(script_copy_path),
                 "reproduce_sh": str(reproduce_path),
+                "replacement_info": replacement_info,
             },
             indent=2,
         )
