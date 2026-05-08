@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime as dt
 import json
 import math
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +59,15 @@ CLASS_COLORS = {
 
 KNOT_RELATED = {"live_knot", "dead_knot", "knot_with_crack", "knot_missing"}
 CRACK_RELATED = {"crack", "knot_with_crack"}
+SHORT_LABELS = {
+    "live_knot": "live",
+    "dead_knot": "dead",
+    "resin": "resin",
+    "knot_with_crack": "knot+crk",
+    "crack": "crack",
+    "marrow": "marrow",
+    "knot_missing": "missing",
+}
 
 
 @dataclass(frozen=True)
@@ -65,6 +76,7 @@ class ModelSpec:
     header: str
     run_name: str
     predictions_path: Path
+    checkpoint_path: str = ""
 
 
 @dataclass
@@ -123,6 +135,12 @@ def parse_args() -> argparse.Namespace:
         help="Prediction JSONL for the two-stage reference.",
     )
     parser.add_argument(
+        "--baseline-checkpoint",
+        type=str,
+        default="",
+        help="Optional checkpoint path for the two-stage reference.",
+    )
+    parser.add_argument(
         "--yolo-run-name",
         type=str,
         default="y0_yolov8s_vsb7_3600_rarefirst_e200",
@@ -139,6 +157,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         required=True,
         help="Prediction JSONL for the YOLO baseline.",
+    )
+    parser.add_argument(
+        "--yolo-checkpoint",
+        type=str,
+        default="",
+        help="Optional checkpoint path for the YOLO baseline.",
     )
     parser.add_argument(
         "--variant-run-name",
@@ -158,10 +182,17 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Prediction JSONL for the YOLO variant.",
     )
+    parser.add_argument(
+        "--variant-checkpoint",
+        type=str,
+        default="",
+        help="Optional checkpoint path for the YOLO variant.",
+    )
     parser.add_argument("--panel-width", type=int, default=420, help="Panel width in pixels.")
     parser.add_argument("--panel-height", type=int, default=220, help="Panel height in pixels.")
     parser.add_argument("--score-threshold", type=float, default=0.25, help="Minimum score to visualize.")
     parser.add_argument("--iou-threshold", type=float, default=0.5, help="IoU threshold for TP / confusion analysis.")
+    parser.add_argument("--show-scores", action="store_true", help="Render prediction scores with one decimal place.")
     return parser.parse_args()
 
 
@@ -350,6 +381,8 @@ def build_image_analysis(
     all_fp_count = sum(stats.fp for stats in model_stats.values())
     all_fn_count = sum(stats.fn for stats in model_stats.values())
     all_confusion_count = sum(stats.confusion_count for stats in model_stats.values())
+    crowd_score = len(gt_entries) + len(all_predictions)
+    simple_object_count = 1 <= len(gt_entries) <= 2
 
     return {
         "image_id": str(record["image_id"]),
@@ -372,6 +405,8 @@ def build_image_analysis(
             [score for stats in model_stats.values() for score in stats.matched_scores]
         ),
         "prediction_count": len(all_predictions),
+        "crowd_score": crowd_score,
+        "simple_object_count": simple_object_count,
     }
 
 
@@ -428,8 +463,10 @@ def select_cases(
                 )
             ),
             sort_key=lambda item: (
+                item["simple_object_count"],
+                -item["crowd_score"],
                 item["mean_matched_score"],
-                item["num_gt"],
+                -item["num_gt"],
             ),
         ),
     )
@@ -446,9 +483,11 @@ def select_cases(
                 and item["model_stats"][yolo_key].fn == 0
             ),
             sort_key=lambda item: (
-                -item["model_stats"][yolo_key].tp,
-                -item["model_stats"][variant_key].tp,
-                -item["mean_matched_score"],
+                item["simple_object_count"],
+                -item["crowd_score"],
+                item["model_stats"][yolo_key].tp,
+                item["model_stats"][variant_key].tp,
+                item["mean_matched_score"],
             ),
         ),
     )
@@ -461,7 +500,8 @@ def select_cases(
             used_image_ids=used_image_ids,
             predicate=lambda item: item["is_negative"] and item["all_fp_count"] > 0,
             sort_key=lambda item: (
-                item["all_fp_count"],
+                item["all_fp_count"] == 1,
+                -item["crowd_score"],
                 max(
                     (entry.score or 0.0)
                     for stats in item["model_stats"].values()
@@ -479,9 +519,11 @@ def select_cases(
             used_image_ids=used_image_ids,
             predicate=lambda item: item["has_crack_related"] and item["all_fn_count"] > 0,
             sort_key=lambda item: (
+                item["simple_object_count"],
                 item["all_fn_count"],
+                -item["crowd_score"],
                 item["has_small_defect"],
-                -item["mean_matched_score"],
+                item["mean_matched_score"],
             ),
         ),
     )
@@ -494,9 +536,11 @@ def select_cases(
             used_image_ids=used_image_ids,
             predicate=lambda item: item["has_knot_related"] and (item["all_confusion_count"] > 0 or item["all_fn_count"] > 0),
             sort_key=lambda item: (
+                item["simple_object_count"],
+                -item["crowd_score"],
                 item["all_confusion_count"],
                 item["all_fn_count"],
-                item["num_gt"],
+                -item["num_gt"],
             ),
         ),
     )
@@ -515,10 +559,12 @@ def select_cases(
                 )
             ),
             sort_key=lambda item: (
+                item["simple_object_count"],
+                -item["crowd_score"],
                 len({item["model_stats"][key].fn for key in (baseline_key, yolo_key, variant_key)})
                 + len({item["model_stats"][key].fp for key in (baseline_key, yolo_key, variant_key)}),
                 item["all_confusion_count"],
-                item["num_gt"],
+                -item["num_gt"],
             ),
         ),
     )
@@ -597,6 +643,34 @@ def compute_crop_box(row: Mapping[str, Any], padding: int = 80) -> tuple[int, in
     return left, top, right, bottom
 
 
+def _ensure_fresh_output_dir(path: Path) -> Path:
+    if not path.exists() or not any(path.iterdir()):
+        return ensure_dir(path)
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return ensure_dir(path.parent / f"{path.name}_{timestamp}")
+
+
+def _build_output_dirs(output_root: Path) -> dict[str, Path]:
+    root = _ensure_fresh_output_dir(output_root)
+    return {
+        "root": root,
+        "composite": ensure_dir(root / "composite"),
+        "panels": ensure_dir(root / "panels"),
+        "originals": ensure_dir(root / "originals"),
+        "manifest": ensure_dir(root / "manifest"),
+        "scripts": ensure_dir(root / "scripts"),
+    }
+
+
+def _panel_suffix(header: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9]+", "", header)
+    return normalized or "panel"
+
+
+def _short_label(label: str) -> str:
+    return SHORT_LABELS.get(label, label.replace("_", " "))
+
+
 def _draw_label(draw: ImageDraw.ImageDraw, x: int, y: int, text: str, fill: str, font: ImageFont.ImageFont) -> None:
     bbox = draw.textbbox((x, y), text, font=font)
     draw.rectangle(
@@ -638,6 +712,12 @@ def _draw_dashed_rectangle(
                 draw.line([(x_start, start[1]), (x_end, end[1])], fill=color, width=width)
 
 
+def _boxes_overlap(box_a: Sequence[float], box_b: Sequence[float], margin: int = 2) -> bool:
+    ax1, ay1, ax2, ay2 = [float(v) for v in box_a]
+    bx1, by1, bx2, by2 = [float(v) for v in box_b]
+    return not (ax2 + margin < bx1 or bx2 + margin < ax1 or ay2 + margin < by1 or by2 + margin < ay1)
+
+
 def render_panel(
     image: Image.Image,
     crop_box: tuple[int, int, int, int],
@@ -645,9 +725,11 @@ def render_panel(
     gt_entries: Sequence[BoxEntry],
     pred_entries: Sequence[BoxEntry],
     show_predictions: bool,
+    show_gt_overlay: bool,
+    show_gt_labels: bool,
+    show_scores: bool,
     panel_width: int,
     panel_height: int,
-    font: ImageFont.ImageFont,
     label_font: ImageFont.ImageFont,
 ) -> Image.Image:
     left, top, right, bottom = crop_box
@@ -671,28 +753,48 @@ def render_panel(
             offset_y + (y2 - top) * scale_y,
         ]
 
-    for gt_entry in gt_entries:
-        gt_box = transform_box(gt_entry.box)
-        _draw_dashed_rectangle(draw, gt_box, color="#4d4d4d", width=2, dash=6)
-        _draw_label(
-            draw,
-            int(gt_box[0]) + 2,
-            max(2, int(gt_box[1]) - 16),
-            gt_entry.label.replace("_", " "),
-            fill="#4d4d4d",
-            font=label_font,
-        )
+    occupied_labels: list[list[float]] = []
+
+    if show_gt_overlay:
+        for gt_entry in gt_entries:
+            gt_box = transform_box(gt_entry.box)
+            _draw_dashed_rectangle(draw, gt_box, color="#666666", width=1 if show_predictions else 2, dash=6)
+            if not show_gt_labels:
+                continue
+            label_text = _short_label(gt_entry.label)
+            text_bbox = draw.textbbox((0, 0), label_text, font=label_font)
+            text_w = text_bbox[2] - text_bbox[0]
+            text_h = text_bbox[3] - text_bbox[1]
+            text_x = int(gt_box[0]) + 2
+            text_y = max(2, int(gt_box[1]) - text_h - 6)
+            label_box = [text_x - 3, text_y - 2, text_x + text_w + 3, text_y + text_h + 2]
+            if any(_boxes_overlap(label_box, existing) for existing in occupied_labels):
+                continue
+            occupied_labels.append(label_box)
+            _draw_label(draw, text_x, text_y, label_text, fill="#4d4d4d", font=label_font)
 
     if show_predictions:
-        for pred_entry in pred_entries:
+        for pred_entry in sorted(pred_entries, key=lambda entry: entry.score or 0.0, reverse=True):
             pred_box = transform_box(pred_entry.box)
             color = CLASS_COLORS.get(pred_entry.label, "#d62728")
             draw.rectangle(pred_box, outline=color, width=3)
+            label_text = _short_label(pred_entry.label)
+            if show_scores and pred_entry.score is not None:
+                label_text = f"{label_text} {pred_entry.score:.1f}"
+            text_bbox = draw.textbbox((0, 0), label_text, font=label_font)
+            text_w = text_bbox[2] - text_bbox[0]
+            text_h = text_bbox[3] - text_bbox[1]
+            text_x = int(pred_box[0]) + 2
+            text_y = max(2, int(pred_box[1]) - text_h - 6)
+            label_box = [text_x - 3, text_y - 2, text_x + text_w + 3, text_y + text_h + 2]
+            if any(_boxes_overlap(label_box, existing) for existing in occupied_labels):
+                continue
+            occupied_labels.append(label_box)
             _draw_label(
                 draw,
-                int(pred_box[0]) + 2,
-                max(2, int(pred_box[1]) - 16),
-                pred_entry.label.replace("_", " "),
+                text_x,
+                text_y,
+                label_text,
                 fill=color,
                 font=label_font,
             )
@@ -700,89 +802,132 @@ def render_panel(
     return canvas
 
 
-def render_figure(
+def _render_row_panels(
+    *,
+    row: Mapping[str, Any],
+    record: Mapping[str, Any],
+    image_root_dir: Path | None,
+    model_specs: Sequence[ModelSpec],
+    panel_width: int,
+    panel_height: int,
+    show_scores: bool,
+) -> tuple[Image.Image, dict[str, Image.Image], Path]:
+    analysis = row["analysis"]
+    image_path = resolve_image_path(record, image_root_dir=image_root_dir)
+    source_image = Image.open(image_path).convert("RGB")
+    crop_box = compute_crop_box(row)
+    label_font = _load_font(13)
+    panels: dict[str, Image.Image] = {
+        "GT": render_panel(
+            image=source_image,
+            crop_box=crop_box,
+            gt_entries=analysis["gt_entries"],
+            pred_entries=[],
+            show_predictions=False,
+            show_gt_overlay=True,
+            show_gt_labels=True,
+            show_scores=False,
+            panel_width=panel_width,
+            panel_height=panel_height,
+            label_font=label_font,
+        )
+    }
+    for spec in model_specs:
+        panels[spec.header] = render_panel(
+            image=source_image,
+            crop_box=crop_box,
+            gt_entries=analysis["gt_entries"],
+            pred_entries=analysis["model_predictions"][spec.key],
+            show_predictions=True,
+            show_gt_overlay=True,
+            show_gt_labels=False,
+            show_scores=show_scores,
+            panel_width=panel_width,
+            panel_height=panel_height,
+            label_font=label_font,
+        )
+    return source_image, panels, image_path
+
+
+def render_composite_figure(
     selected_rows: Sequence[dict[str, Any]],
     records_by_image: Mapping[str, Mapping[str, Any]],
     image_root_dir: Path | None,
     model_specs: Sequence[ModelSpec],
     panel_width: int,
     panel_height: int,
-    output_dir: Path,
+    output_path_png: Path,
+    output_path_pdf: Path,
+    show_scores: bool,
 ) -> tuple[Path, Path]:
     header_font = _load_font(20)
-    label_font = _load_font(14)
-    row_label_font = _load_font(13)
-
     columns = ["GT"] + [spec.header for spec in model_specs]
-    header_height = 42
-    row_note_width = 140
+    header_height = 40
+    margin = 14
     gap_x = 10
-    gap_y = 10
-    width = row_note_width + len(columns) * panel_width + (len(columns) - 1) * gap_x + 20
-    height = header_height + len(selected_rows) * panel_height + (len(selected_rows) - 1) * gap_y + 20
+    gap_y = 12
+    width = margin * 2 + len(columns) * panel_width + (len(columns) - 1) * gap_x
+    height = margin * 2 + header_height + len(selected_rows) * panel_height + (len(selected_rows) - 1) * gap_y
     figure = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(figure)
 
     for column_index, header in enumerate(columns):
-        x = row_note_width + column_index * (panel_width + gap_x) + panel_width // 2
+        x = margin + column_index * (panel_width + gap_x) + panel_width // 2
         bbox = draw.textbbox((0, 0), header, font=header_font)
-        draw.text((x - (bbox[2] - bbox[0]) / 2, 8), header, fill="black", font=header_font)
+        draw.text((x - (bbox[2] - bbox[0]) / 2, margin), header, fill="black", font=header_font)
 
     for row_index, row in enumerate(selected_rows):
-        analysis = row["analysis"]
         record = records_by_image[row["image_id"]]
-        image_path = resolve_image_path(record, image_root_dir=image_root_dir)
-        with Image.open(image_path) as image:
-            crop_box = compute_crop_box(row)
-            y = header_height + row_index * (panel_height + gap_y)
-            row_label = row["case_type"].replace("_", " ")
-            draw.text((10, y + 6), row_label, fill="black", font=row_label_font)
+        _, row_panels, _ = _render_row_panels(
+            row=row,
+            record=record,
+            image_root_dir=image_root_dir,
+            model_specs=model_specs,
+            panel_width=panel_width,
+            panel_height=panel_height,
+            show_scores=show_scores,
+        )
+        y = margin + header_height + row_index * (panel_height + gap_y)
+        for column_index, header in enumerate(columns):
+            x = margin + column_index * (panel_width + gap_x)
+            figure.paste(row_panels[header], (x, y))
 
-            gt_panel = render_panel(
-                image=image,
-                crop_box=crop_box,
-                gt_entries=analysis["gt_entries"],
-                pred_entries=[],
-                show_predictions=False,
-                panel_width=panel_width,
-                panel_height=panel_height,
-                font=header_font,
-                label_font=label_font,
-            )
-            figure.paste(gt_panel, (row_note_width, y))
-
-            for column_offset, spec in enumerate(model_specs, start=1):
-                panel = render_panel(
-                    image=image,
-                    crop_box=crop_box,
-                    gt_entries=analysis["gt_entries"],
-                    pred_entries=analysis["model_predictions"][spec.key],
-                    show_predictions=True,
-                    panel_width=panel_width,
-                    panel_height=panel_height,
-                    font=header_font,
-                    label_font=label_font,
-                )
-                x = row_note_width + column_offset * (panel_width + gap_x)
-                figure.paste(panel, (x, y))
-
-    png_path = output_dir / "in_domain_qualitative_comparison.png"
-    pdf_path = output_dir / "in_domain_qualitative_comparison.pdf"
-    figure.save(png_path)
-    figure.save(pdf_path, resolution=300.0)
-    return png_path, pdf_path
+    figure.save(output_path_png)
+    figure.save(output_path_pdf, resolution=300.0)
+    return output_path_png, output_path_pdf
 
 
-def export_selection_manifest(selected_rows: Sequence[dict[str, Any]], output_dir: Path) -> tuple[Path, Path]:
+def export_selection_manifest(
+    selected_rows: Sequence[dict[str, Any]],
+    output_dir: Path,
+    *,
+    model_specs: Sequence[ModelSpec],
+    exported_assets: Sequence[Mapping[str, str]],
+) -> tuple[Path, Path]:
     manifest_rows = []
-    for row in selected_rows:
+    for index, row in enumerate(selected_rows, start=1):
+        asset_info = dict(exported_assets[index - 1]) if index - 1 < len(exported_assets) else {}
         manifest_rows.append(
             {
+                "row_index": index,
                 "image_id": row["image_id"],
+                "filename": Path(str(asset_info.get("source_image_path", row["image_id"]))).name,
                 "split": row["split"],
                 "case_type": row["case_type"],
-                "reason": row["reason"],
+                "reason_for_selection": row["reason"],
                 "gt_labels": ";".join(row["analysis"]["gt_labels"]),
+                "baseline_run": model_specs[0].run_name,
+                "baseline_checkpoint": model_specs[0].checkpoint_path,
+                "yolo_run": model_specs[1].run_name,
+                "yolo_checkpoint": model_specs[1].checkpoint_path,
+                "variant_run": model_specs[2].run_name,
+                "variant_checkpoint": model_specs[2].checkpoint_path,
+                "original_path": asset_info.get("original", ""),
+                "gt_panel": asset_info.get("GT", ""),
+                "baseline_panel": asset_info.get(_panel_suffix(model_specs[0].header), ""),
+                "yolo_panel": asset_info.get(_panel_suffix(model_specs[1].header), ""),
+                "variant_panel": asset_info.get(_panel_suffix(model_specs[2].header), ""),
+                "source_image_path": asset_info.get("source_image_path", ""),
             }
         )
 
@@ -807,6 +952,7 @@ def export_note(
     lines = [
         "In-domain qualitative comparison on the curated benchmark.",
         f"Preferred split: {split_name}.",
+        "Selection policy: prioritize compact, readable rows with 1-2 salient objects when possible, while still preserving one honest texture false-positive case and one disagreement/difficult case.",
         "Compared runs:",
     ]
     for spec in model_specs:
@@ -818,10 +964,107 @@ def export_note(
     return note_path
 
 
+def export_panels_and_originals(
+    *,
+    selected_rows: Sequence[dict[str, Any]],
+    records_by_image: Mapping[str, Mapping[str, Any]],
+    image_root_dir: Path | None,
+    model_specs: Sequence[ModelSpec],
+    panel_width: int,
+    panel_height: int,
+    show_scores: bool,
+    panels_dir: Path,
+    originals_dir: Path,
+) -> list[dict[str, str]]:
+    exported: list[dict[str, str]] = []
+    for index, row in enumerate(selected_rows, start=1):
+        row_prefix = f"row{index:02d}"
+        record = records_by_image[row["image_id"]]
+        source_image, row_panels, resolved_image_path = _render_row_panels(
+            row=row,
+            record=record,
+            image_root_dir=image_root_dir,
+            model_specs=model_specs,
+            panel_width=panel_width,
+            panel_height=panel_height,
+            show_scores=show_scores,
+        )
+        original_path = originals_dir / f"{row_prefix}_original.png"
+        source_image.save(original_path)
+        asset_info = {"original": str(original_path), "source_image_path": str(resolved_image_path)}
+        for header, panel in row_panels.items():
+            suffix = "GT" if header == "GT" else _panel_suffix(header)
+            panel_path = panels_dir / f"{row_prefix}_{suffix}.png"
+            panel.save(panel_path)
+            asset_info[suffix] = str(panel_path)
+        exported.append(asset_info)
+    return exported
+
+
+def export_script_bundle(output_dir: Path, args: argparse.Namespace) -> tuple[Path, Path]:
+    script_copy_path = output_dir / Path(__file__).name
+    shutil.copy2(Path(__file__), script_copy_path)
+    command_path = output_dir / "reproduce.sh"
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--manifest",
+        str(args.manifest),
+        "--output-dir",
+        str(args.output_dir),
+        "--split",
+        str(args.split),
+        "--baseline-run-name",
+        str(args.baseline_run_name),
+        "--baseline-predictions",
+        str(args.baseline_predictions),
+        "--baseline-checkpoint",
+        str(args.baseline_checkpoint),
+        "--baseline-header",
+        str(args.baseline_header),
+        "--yolo-run-name",
+        str(args.yolo_run_name),
+        "--yolo-predictions",
+        str(args.yolo_predictions),
+        "--yolo-checkpoint",
+        str(args.yolo_checkpoint),
+        "--yolo-header",
+        str(args.yolo_header),
+        "--variant-run-name",
+        str(args.variant_run_name),
+        "--variant-predictions",
+        str(args.variant_predictions),
+        "--variant-checkpoint",
+        str(args.variant_checkpoint),
+        "--variant-header",
+        str(args.variant_header),
+        "--rows",
+        str(args.rows),
+        "--panel-width",
+        str(args.panel_width),
+        "--panel-height",
+        str(args.panel_height),
+        "--score-threshold",
+        str(args.score_threshold),
+        "--iou-threshold",
+        str(args.iou_threshold),
+    ]
+    if args.image_root_dir:
+        command.extend(["--image-root-dir", str(args.image_root_dir)])
+    if args.show_scores:
+        command.append("--show-scores")
+    command_path.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n" + " ".join(json.dumps(token) for token in command) + "\n",
+        encoding="utf-8",
+    )
+    command_path.chmod(0o755)
+    return script_copy_path, command_path
+
+
 def main() -> None:
     args = parse_args()
     manifest_path = Path(args.manifest)
-    output_dir = ensure_dir(args.output_dir)
+    output_dirs = _build_output_dirs(Path(args.output_dir))
     image_root_dir = Path(args.image_root_dir) if args.image_root_dir else None
     class_names = [str(name) for name in args.class_names]
 
@@ -831,18 +1074,21 @@ def main() -> None:
             header=args.baseline_header,
             run_name=args.baseline_run_name,
             predictions_path=Path(args.baseline_predictions),
+            checkpoint_path=str(args.baseline_checkpoint or ""),
         ),
         ModelSpec(
             key="yolo",
             header=args.yolo_header,
             run_name=args.yolo_run_name,
             predictions_path=Path(args.yolo_predictions),
+            checkpoint_path=str(args.yolo_checkpoint or ""),
         ),
         ModelSpec(
             key="variant",
             header=args.variant_header,
             run_name=args.variant_run_name,
             predictions_path=Path(args.variant_predictions),
+            checkpoint_path=str(args.variant_checkpoint or ""),
         ),
     ]
 
@@ -894,33 +1140,59 @@ def main() -> None:
     if not selected_rows:
         raise ValueError("Case selection returned no examples. Check manifest split or prediction inputs.")
 
-    png_path, pdf_path = render_figure(
+    exported_assets = export_panels_and_originals(
         selected_rows=selected_rows,
         records_by_image=records_by_image,
         image_root_dir=image_root_dir,
         model_specs=model_specs,
         panel_width=int(args.panel_width),
         panel_height=int(args.panel_height),
-        output_dir=output_dir,
+        show_scores=bool(args.show_scores),
+        panels_dir=output_dirs["panels"],
+        originals_dir=output_dirs["originals"],
     )
-    json_manifest_path, csv_manifest_path = export_selection_manifest(selected_rows, output_dir=output_dir)
+    png_path, pdf_path = render_composite_figure(
+        selected_rows=selected_rows,
+        records_by_image=records_by_image,
+        image_root_dir=image_root_dir,
+        model_specs=model_specs,
+        panel_width=int(args.panel_width),
+        panel_height=int(args.panel_height),
+        output_path_png=output_dirs["composite"] / "in_domain_qualitative_revision.png",
+        output_path_pdf=output_dirs["composite"] / "in_domain_qualitative_revision.pdf",
+        show_scores=bool(args.show_scores),
+    )
+    json_manifest_path, csv_manifest_path = export_selection_manifest(
+        selected_rows,
+        output_dir=output_dirs["manifest"],
+        model_specs=model_specs,
+        exported_assets=exported_assets,
+    )
     note_path = export_note(
-        output_dir=output_dir,
+        output_dir=output_dirs["manifest"],
         split_name=args.split,
         selected_rows=selected_rows,
         model_specs=model_specs,
     )
+    script_copy_path, reproduce_path = export_script_bundle(output_dirs["scripts"], args)
 
     summary = {
+        "output_root": str(output_dirs["root"]),
         "figure_png": str(png_path),
         "figure_pdf": str(pdf_path),
         "manifest_json": str(json_manifest_path),
         "manifest_csv": str(csv_manifest_path),
         "note_path": str(note_path),
+        "scripts": {
+            "script_copy": str(script_copy_path),
+            "reproduce_sh": str(reproduce_path),
+        },
+        "panels_dir": str(output_dirs["panels"]),
+        "originals_dir": str(output_dirs["originals"]),
         "selected_image_ids": [row["image_id"] for row in selected_rows],
         "model_runs": {spec.header: spec.run_name for spec in model_specs},
     }
-    save_json(summary, output_dir / "in_domain_qualitative_summary.json")
+    save_json(summary, output_dirs["manifest"] / "in_domain_qualitative_summary.json")
     print(json.dumps(summary, indent=2))
 
 

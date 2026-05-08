@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime as dt
 import json
 import math
+import re
+import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -19,6 +23,11 @@ CLASS_COLORS = {
     "dead_knot": "#17becf",
     "knot_free": "#7f7f7f",
 }
+SHORT_LABELS = {
+    "live_knot": "live",
+    "dead_knot": "dead",
+    "knot_free": "clear",
+}
 
 
 @dataclass(frozen=True)
@@ -27,6 +36,7 @@ class ModelSpec:
     header: str
     run_name: str
     predictions_path: Path
+    checkpoint_path: str = ""
 
 
 @dataclass
@@ -76,6 +86,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--t0-header", type=str, default="T0", help="Column header for target-only model.")
     parser.add_argument("--t0-predictions", type=str, required=True, help="Prediction JSONL for T0.")
+    parser.add_argument("--t0-checkpoint", type=str, default="", help="Optional checkpoint path for T0.")
     parser.add_argument(
         "--t1-run-name",
         type=str,
@@ -84,6 +95,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--t1-header", type=str, default="T1", help="Column header for T1.")
     parser.add_argument("--t1-predictions", type=str, required=True, help="Prediction JSONL for T1.")
+    parser.add_argument("--t1-checkpoint", type=str, default="", help="Optional checkpoint path for T1.")
     parser.add_argument("--panel-width", type=int, default=380, help="Panel width in pixels.")
     parser.add_argument("--panel-height", type=int, default=260, help="Panel height in pixels.")
     parser.add_argument("--score-threshold", type=float, default=0.25, help="Visualization score threshold.")
@@ -103,6 +115,37 @@ def _load_font(size: int) -> ImageFont.ImageFont:
         except OSError:
             continue
     return ImageFont.load_default()
+
+
+def _ensure_fresh_output_dir(path: Path) -> Path:
+    if not path.exists() or not any(path.iterdir()):
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    fresh_path = path.parent / f"{path.name}_{timestamp}"
+    fresh_path.mkdir(parents=True, exist_ok=True)
+    return fresh_path
+
+
+def _build_output_dirs(output_root: Path) -> dict[str, Path]:
+    root = _ensure_fresh_output_dir(output_root)
+    dirs = {
+        "root": root,
+        "composite": root / "composite",
+        "panels": root / "panels",
+        "originals": root / "originals",
+        "manifest": root / "manifest",
+        "scripts": root / "scripts",
+    }
+    for path in dirs.values():
+        if path != root:
+            path.mkdir(parents=True, exist_ok=True)
+    return dirs
+
+
+def _panel_suffix(header: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9]+", "", header)
+    return normalized or "panel"
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -251,6 +294,8 @@ def _record_analysis(record: Mapping[str, Any], gt_entries: list[BoxEntry], t0_e
         "gt_count": len(gt_entries),
         "has_background_only": len(gt_entries) == 0,
         "gt_area_ratio": gt_area / (width * height),
+        "crowd_score": len(gt_entries) + len(t0_entries) + len(t1_entries),
+        "simple_object_count": 1 <= len(gt_entries) <= 2,
     }
 
 
@@ -275,6 +320,8 @@ def _select_rows(analyses: list[dict[str, Any]], max_rows: int) -> list[dict[str
             )
         ],
         key=lambda item: (
+            item["simple_object_count"],
+            -item["crowd_score"],
             item["t1"].tp - item["t0"].tp,
             item["t1"].mean_iou - item["t0"].mean_iou,
             -item["t1"].fp,
@@ -289,6 +336,8 @@ def _select_rows(analyses: list[dict[str, Any]], max_rows: int) -> list[dict[str
             and (item["t1"].fp < item["t0"].fp or item["t1"].confusion < item["t0"].confusion)
         ],
         key=lambda item: (
+            item["simple_object_count"],
+            -item["crowd_score"],
             item["t0"].fp - item["t1"].fp,
             item["t0"].confusion - item["t1"].confusion,
             item["t1"].mean_iou,
@@ -305,6 +354,8 @@ def _select_rows(analyses: list[dict[str, Any]], max_rows: int) -> list[dict[str
             )
         ],
         key=lambda item: (
+            item["simple_object_count"],
+            -item["crowd_score"],
             item["t0"].tp - item["t1"].tp,
             item["t1"].fp - item["t0"].fp,
             item["t0"].mean_iou - item["t1"].mean_iou,
@@ -321,7 +372,9 @@ def _select_rows(analyses: list[dict[str, Any]], max_rows: int) -> list[dict[str
             )
         ],
         key=lambda item: (
+            item["simple_object_count"],
             item["t0"].fn + item["t1"].fn + item["t0"].confusion + item["t1"].confusion,
+            -item["crowd_score"],
             -item["gt_area_ratio"],
         ),
         reverse=True,
@@ -360,10 +413,12 @@ def _select_rows(analyses: list[dict[str, Any]], max_rows: int) -> list[dict[str
         disagreement = sorted(
             analyses,
             key=lambda item: (
+                item["simple_object_count"],
+                -item["crowd_score"],
                 abs(item["t1"].tp - item["t0"].tp)
                 + abs(item["t1"].fp - item["t0"].fp)
                 + abs(item["t1"].confusion - item["t0"].confusion),
-                item["gt_count"],
+                -item["gt_count"],
             ),
             reverse=True,
         )
@@ -433,13 +488,20 @@ def _transform_box(box: Sequence[float], crop: tuple[float, float, float, float]
     ]
 
 
+def _boxes_overlap(box_a: Sequence[float], box_b: Sequence[float], margin: int = 2) -> bool:
+    ax1, ay1, ax2, ay2 = [float(v) for v in box_a]
+    bx1, by1, bx2, by2 = [float(v) for v in box_b]
+    return not (ax2 + margin < bx1 or bx2 + margin < ax1 or ay2 + margin < by1 or by2 + margin < ay1)
+
+
 def _draw_entries(image: Image.Image, entries: Sequence[BoxEntry], crop: tuple[float, float, float, float], panel_width: int, panel_height: int, font: ImageFont.ImageFont, show_scores: bool) -> None:
     draw = ImageDraw.Draw(image)
-    for entry in entries:
+    occupied_labels: list[list[float]] = []
+    for entry in sorted(entries, key=lambda item: item.score or 0.0, reverse=True):
         color = CLASS_COLORS.get(entry.label, "#444444")
         x1, y1, x2, y2 = _transform_box(entry.box, crop, panel_width, panel_height)
         draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
-        label = entry.label
+        label = SHORT_LABELS.get(entry.label, entry.label)
         if show_scores and entry.score is not None:
             label = f"{label} {entry.score:.1f}"
         text_bbox = draw.textbbox((0, 0), label, font=font)
@@ -447,7 +509,11 @@ def _draw_entries(image: Image.Image, entries: Sequence[BoxEntry], crop: tuple[f
         text_h = text_bbox[3] - text_bbox[1]
         text_x = max(0.0, min(x1, panel_width - text_w - 6))
         text_y = max(0.0, y1 - text_h - 6)
-        draw.rectangle([text_x, text_y, text_x + text_w + 6, text_y + text_h + 4], fill=color)
+        label_box = [text_x, text_y, text_x + text_w + 6, text_y + text_h + 4]
+        if any(_boxes_overlap(label_box, existing) for existing in occupied_labels):
+            continue
+        occupied_labels.append(label_box)
+        draw.rectangle(label_box, fill=color)
         draw.text((text_x + 3, text_y + 1), label, fill="white", font=font)
 
 
@@ -463,6 +529,39 @@ def _render_panel(record: Mapping[str, Any], entries: Sequence[BoxEntry], refere
     font = _load_font(20)
     _draw_entries(resized, entries, crop, panel_width, panel_height, font, show_scores)
     return resized
+
+
+def _export_panels_and_originals(
+    *,
+    rows: list[dict[str, Any]],
+    panel_width: int,
+    panel_height: int,
+    show_scores: bool,
+    panels_dir: Path,
+    originals_dir: Path,
+) -> list[dict[str, str]]:
+    exported: list[dict[str, str]] = []
+    for index, row in enumerate(rows, start=1):
+        row_prefix = f"row{index:02d}"
+        resolved_image_path = Path(str(row["record"]["_resolved_image_path"]))
+        source_image = Image.open(resolved_image_path).convert("RGB")
+        original_path = originals_dir / f"{row_prefix}_original.png"
+        source_image.save(original_path)
+
+        reference_boxes = list(row["gt_entries"]) + list(row["t0_entries"]) + list(row["t1_entries"])
+        panel_map = {
+            "GT": _render_panel(row["record"], row["gt_entries"], reference_boxes, panel_width, panel_height, False),
+            "T0": _render_panel(row["record"], row["t0_entries"], reference_boxes, panel_width, panel_height, show_scores),
+            "T1": _render_panel(row["record"], row["t1_entries"], reference_boxes, panel_width, panel_height, show_scores),
+        }
+        asset_info = {"original": str(original_path), "source_image_path": str(resolved_image_path)}
+        for header, panel in panel_map.items():
+            suffix = _panel_suffix(header)
+            panel_path = panels_dir / f"{row_prefix}_{suffix}.png"
+            panel.save(panel_path)
+            asset_info[suffix] = str(panel_path)
+        exported.append(asset_info)
+    return exported
 
 
 def _assemble_figure(rows: list[dict[str, Any]], models: list[ModelSpec], output_path_png: Path, output_path_pdf: Path, panel_width: int, panel_height: int, show_scores: bool) -> None:
@@ -499,10 +598,16 @@ def _assemble_figure(rows: list[dict[str, Any]], models: list[ModelSpec], output
     canvas.save(output_path_pdf, "PDF", resolution=300.0)
 
 
-def _write_manifest(rows: list[dict[str, Any]], models: list[ModelSpec], output_dir: Path) -> tuple[Path, Path, Path]:
+def _write_manifest(
+    rows: list[dict[str, Any]],
+    models: list[ModelSpec],
+    output_dir: Path,
+    exported_assets: Sequence[Mapping[str, str]],
+) -> tuple[Path, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_rows = []
     for index, row in enumerate(rows, start=1):
+        asset_info = dict(exported_assets[index - 1]) if index - 1 < len(exported_assets) else {}
         manifest_rows.append(
             {
                 "row_index": index,
@@ -512,6 +617,15 @@ def _write_manifest(rows: list[dict[str, Any]], models: list[ModelSpec], output_
                 "case_type": row["case_type"],
                 "outcome_label": row["outcome_label"],
                 "reason_for_selection": row["reason_for_selection"],
+                "t0_run": models[1].run_name,
+                "t0_checkpoint": models[1].checkpoint_path,
+                "t1_run": models[2].run_name,
+                "t1_checkpoint": models[2].checkpoint_path,
+                "original_path": asset_info.get("original", ""),
+                "gt_panel": asset_info.get("GT", ""),
+                "t0_panel": asset_info.get("T0", ""),
+                "t1_panel": asset_info.get("T1", ""),
+                "source_image_path": asset_info.get("source_image_path", ""),
             }
         )
 
@@ -521,8 +635,16 @@ def _write_manifest(rows: list[dict[str, Any]], models: list[ModelSpec], output_
 
     payload = {
         "runs_used": {
-            "t0": {"run_name": models[1].run_name, "predictions_path": str(models[1].predictions_path)},
-            "t1": {"run_name": models[2].run_name, "predictions_path": str(models[2].predictions_path)},
+            "t0": {
+                "run_name": models[1].run_name,
+                "checkpoint_path": models[1].checkpoint_path,
+                "predictions_path": str(models[1].predictions_path),
+            },
+            "t1": {
+                "run_name": models[2].run_name,
+                "checkpoint_path": models[2].checkpoint_path,
+                "predictions_path": str(models[2].predictions_path),
+            },
         },
         "selection_policy": "Balanced 4-row selection with two T1-better rows, one T0-similar/better row, and one difficult row.",
         "rows": manifest_rows,
@@ -546,11 +668,63 @@ def _write_manifest(rows: list[dict[str, Any]], models: list[ModelSpec], output_
     return manifest_json_path, manifest_csv_path, note_path
 
 
+def _export_script_bundle(output_dir: Path, args: argparse.Namespace) -> tuple[Path, Path]:
+    script_copy_path = output_dir / Path(__file__).name
+    shutil.copy2(Path(__file__), script_copy_path)
+    command_path = output_dir / "reproduce.sh"
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--manifest",
+        str(args.manifest),
+        "--output-dir",
+        str(args.output_dir),
+        "--split",
+        str(args.split),
+        "--rows",
+        str(args.rows),
+        "--t0-run-name",
+        str(args.t0_run_name),
+        "--t0-header",
+        str(args.t0_header),
+        "--t0-predictions",
+        str(args.t0_predictions),
+        "--t0-checkpoint",
+        str(args.t0_checkpoint),
+        "--t1-run-name",
+        str(args.t1_run_name),
+        "--t1-header",
+        str(args.t1_header),
+        "--t1-predictions",
+        str(args.t1_predictions),
+        "--t1-checkpoint",
+        str(args.t1_checkpoint),
+        "--panel-width",
+        str(args.panel_width),
+        "--panel-height",
+        str(args.panel_height),
+        "--score-threshold",
+        str(args.score_threshold),
+        "--iou-threshold",
+        str(args.iou_threshold),
+    ]
+    if args.image_root_dir:
+        command.extend(["--image-root-dir", str(args.image_root_dir)])
+    if args.show_scores:
+        command.append("--show-scores")
+    command_path.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n" + " ".join(json.dumps(token) for token in command) + "\n",
+        encoding="utf-8",
+    )
+    command_path.chmod(0o755)
+    return script_copy_path, command_path
+
+
 def main() -> None:
     args = parse_args()
     manifest_path = Path(args.manifest)
     image_root_dir = Path(args.image_root_dir) if args.image_root_dir else None
-    output_dir = Path(args.output_dir)
+    output_dirs = _build_output_dirs(Path(args.output_dir))
     records = _load_records(manifest_path, split=args.split)
     records_with_paths = []
     for record in records:
@@ -561,8 +735,8 @@ def main() -> None:
 
     models = [
         ModelSpec("gt", "Ground truth", "ground_truth", manifest_path),
-        ModelSpec("t0", args.t0_header, args.t0_run_name, Path(args.t0_predictions)),
-        ModelSpec("t1", args.t1_header, args.t1_run_name, Path(args.t1_predictions)),
+        ModelSpec("t0", args.t0_header, args.t0_run_name, Path(args.t0_predictions), str(args.t0_checkpoint or "")),
+        ModelSpec("t1", args.t1_header, args.t1_run_name, Path(args.t1_predictions), str(args.t1_checkpoint or "")),
     ]
     t0_predictions = _load_predictions(models[1].predictions_path, args.class_names, args.score_threshold)
     t1_predictions = _load_predictions(models[2].predictions_path, args.class_names, args.score_threshold)
@@ -578,9 +752,16 @@ def main() -> None:
     if len(rows) < 4:
         raise RuntimeError("Could not select enough balanced rows for the VNWoodKnot qualitative figure.")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    figure_png = output_dir / "vnwoodknot_transfer_qualitative_raw.png"
-    figure_pdf = output_dir / "vnwoodknot_transfer_qualitative_raw.pdf"
+    exported_assets = _export_panels_and_originals(
+        rows=rows,
+        panel_width=int(args.panel_width),
+        panel_height=int(args.panel_height),
+        show_scores=bool(args.show_scores),
+        panels_dir=output_dirs["panels"],
+        originals_dir=output_dirs["originals"],
+    )
+    figure_png = output_dirs["composite"] / "vnwoodknot_transfer_qualitative_revision.png"
+    figure_pdf = output_dirs["composite"] / "vnwoodknot_transfer_qualitative_revision.pdf"
     _assemble_figure(
         rows=rows,
         models=models,
@@ -590,15 +771,21 @@ def main() -> None:
         panel_height=int(args.panel_height),
         show_scores=bool(args.show_scores),
     )
-    manifest_json_path, manifest_csv_path, note_path = _write_manifest(rows, models, output_dir)
+    manifest_json_path, manifest_csv_path, note_path = _write_manifest(rows, models, output_dirs["manifest"], exported_assets)
+    script_copy_path, reproduce_path = _export_script_bundle(output_dirs["scripts"], args)
     print(
         json.dumps(
             {
+                "output_root": str(output_dirs["root"]),
                 "figure_png": str(figure_png),
                 "figure_pdf": str(figure_pdf),
                 "manifest_json": str(manifest_json_path),
                 "manifest_csv": str(manifest_csv_path),
                 "note_txt": str(note_path),
+                "panels_dir": str(output_dirs["panels"]),
+                "originals_dir": str(output_dirs["originals"]),
+                "script_copy": str(script_copy_path),
+                "reproduce_sh": str(reproduce_path),
             },
             indent=2,
         )
