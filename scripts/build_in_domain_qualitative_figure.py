@@ -472,27 +472,6 @@ def select_cases(
     )
 
     add_row(
-        "small_or_low_contrast",
-        "A small-defect case that remains correct overall but is visually harder than the easiest examples.",
-        _choose_best_candidate(
-            analyses,
-            used_image_ids=used_image_ids,
-            predicate=lambda item: (
-                item["has_small_defect"]
-                and item["num_gt"] > 0
-                and item["model_stats"][yolo_key].fn == 0
-            ),
-            sort_key=lambda item: (
-                item["simple_object_count"],
-                -item["crowd_score"],
-                item["model_stats"][yolo_key].tp,
-                item["model_stats"][variant_key].tp,
-                item["mean_matched_score"],
-            ),
-        ),
-    )
-
-    add_row(
         "false_positive_texture",
         "A negative/background tile that triggers at least one false positive on wood texture or grain.",
         _choose_best_candidate(
@@ -512,8 +491,8 @@ def select_cases(
     )
 
     add_row(
-        "missed_crack",
-        "A crack or knot-with-crack case with at least one clear false negative under the shared test protocol.",
+        "weak_defect_or_crack_confusion",
+        "A weak or crack-related defect where at least one model misses or confuses the target under the shared test protocol.",
         _choose_best_candidate(
             analyses,
             used_image_ids=used_image_ids,
@@ -545,29 +524,76 @@ def select_cases(
         ),
     )
 
-    add_row(
-        "model_disagreement",
-        "A held-out test image where the compared models disagree substantially in false positives or missed detections.",
-        _choose_best_candidate(
-            analyses,
-            used_image_ids=used_image_ids,
-            predicate=lambda item: (
-                item["num_gt"] > 0
-                and (
-                    len({item["model_stats"][key].fn for key in (baseline_key, yolo_key, variant_key)}) > 1
-                    or len({item["model_stats"][key].fp for key in (baseline_key, yolo_key, variant_key)}) > 1
-                )
+    if max_rows > 4:
+        add_row(
+            "small_or_low_contrast",
+            "A small-defect case that remains correct overall but is visually harder than the easiest examples.",
+            _choose_best_candidate(
+                analyses,
+                used_image_ids=used_image_ids,
+                predicate=lambda item: (
+                    item["has_small_defect"]
+                    and item["num_gt"] > 0
+                    and item["model_stats"][yolo_key].fn == 0
+                ),
+                sort_key=lambda item: (
+                    item["simple_object_count"],
+                    -item["crowd_score"],
+                    item["model_stats"][yolo_key].tp,
+                    item["model_stats"][variant_key].tp,
+                    item["mean_matched_score"],
+                ),
             ),
-            sort_key=lambda item: (
-                item["simple_object_count"],
-                -item["crowd_score"],
-                len({item["model_stats"][key].fn for key in (baseline_key, yolo_key, variant_key)})
-                + len({item["model_stats"][key].fp for key in (baseline_key, yolo_key, variant_key)}),
-                item["all_confusion_count"],
-                -item["num_gt"],
+        )
+
+        add_row(
+            "model_disagreement",
+            "A held-out test image where the compared models disagree substantially in false positives or missed detections.",
+            _choose_best_candidate(
+                analyses,
+                used_image_ids=used_image_ids,
+                predicate=lambda item: (
+                    item["num_gt"] > 0
+                    and (
+                        len({item["model_stats"][key].fn for key in (baseline_key, yolo_key, variant_key)}) > 1
+                        or len({item["model_stats"][key].fp for key in (baseline_key, yolo_key, variant_key)}) > 1
+                    )
+                ),
+                sort_key=lambda item: (
+                    item["simple_object_count"],
+                    -item["crowd_score"],
+                    len({item["model_stats"][key].fn for key in (baseline_key, yolo_key, variant_key)})
+                    + len({item["model_stats"][key].fp for key in (baseline_key, yolo_key, variant_key)}),
+                    item["all_confusion_count"],
+                    -item["num_gt"],
+                ),
             ),
-        ),
-    )
+        )
+
+    if len(rows) < max_rows:
+        add_row(
+            "model_disagreement",
+            "Fallback disagreement case selected because one preferred category had no clean low-clutter candidate.",
+            _choose_best_candidate(
+                analyses,
+                used_image_ids=used_image_ids,
+                predicate=lambda item: (
+                    item["num_gt"] > 0
+                    and (
+                        len({item["model_stats"][key].fn for key in (baseline_key, yolo_key, variant_key)}) > 1
+                        or len({item["model_stats"][key].fp for key in (baseline_key, yolo_key, variant_key)}) > 1
+                    )
+                ),
+                sort_key=lambda item: (
+                    item["simple_object_count"],
+                    -item["crowd_score"],
+                    len({item["model_stats"][key].fn for key in (baseline_key, yolo_key, variant_key)})
+                    + len({item["model_stats"][key].fp for key in (baseline_key, yolo_key, variant_key)}),
+                    item["all_confusion_count"],
+                    -item["num_gt"],
+                ),
+            ),
+        )
 
     return rows[:max_rows]
 
@@ -927,6 +953,7 @@ def export_selection_manifest(
                 "baseline_panel": asset_info.get(_panel_suffix(model_specs[0].header), ""),
                 "yolo_panel": asset_info.get(_panel_suffix(model_specs[1].header), ""),
                 "variant_panel": asset_info.get(_panel_suffix(model_specs[2].header), ""),
+                "row_strip": asset_info.get("strip", ""),
                 "source_image_path": asset_info.get("source_image_path", ""),
             }
         )
@@ -952,7 +979,7 @@ def export_note(
     lines = [
         "In-domain qualitative comparison on the curated benchmark.",
         f"Preferred split: {split_name}.",
-        "Selection policy: prioritize compact, readable rows with 1-2 salient objects when possible, while still preserving one honest texture false-positive case and one disagreement/difficult case.",
+        "Selection policy: prioritize a compact 4-row mix of easy correct, texture false positive, weak/crack-related confusion, and knot-related disagreement cases with 1-2 salient objects when possible.",
         "Compared runs:",
     ]
     for spec in model_specs:
@@ -992,11 +1019,21 @@ def export_panels_and_originals(
         original_path = originals_dir / f"{row_prefix}_original.png"
         source_image.save(original_path)
         asset_info = {"original": str(original_path), "source_image_path": str(resolved_image_path)}
-        for header, panel in row_panels.items():
+        strip_gap = 8
+        ordered_headers = ["GT"] + [spec.header for spec in model_specs]
+        strip_width = len(ordered_headers) * panel_width + (len(ordered_headers) - 1) * strip_gap
+        strip_image = Image.new("RGB", (strip_width, panel_height), "white")
+        for column_index, header in enumerate(ordered_headers):
+            panel = row_panels[header]
             suffix = "GT" if header == "GT" else _panel_suffix(header)
             panel_path = panels_dir / f"{row_prefix}_{suffix}.png"
             panel.save(panel_path)
             asset_info[suffix] = str(panel_path)
+            strip_x = column_index * (panel_width + strip_gap)
+            strip_image.paste(panel, (strip_x, 0))
+        strip_path = panels_dir / f"{row_prefix}_strip.png"
+        strip_image.save(strip_path)
+        asset_info["strip"] = str(strip_path)
         exported.append(asset_info)
     return exported
 
