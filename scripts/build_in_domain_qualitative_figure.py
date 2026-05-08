@@ -20,11 +20,16 @@ import csv
 import json
 import math
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.datasets.screened_benchmark import load_jsonl_records
 from src.utils.io import ensure_dir, save_json
